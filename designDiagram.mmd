@@ -1,0 +1,176 @@
+classDiagram
+direction TB
+
+class UserInterface {
+<<SWE>>
+-currentView
+-selectedNotice
++showDashboard()
++showBriefing()
++showWhy()
++showSettings()
++showDeviceHealth()
++submitQuestion()
+}
+
+class ContextEngine {
+<<SWE>>
+-currentSnapshot
+-userSettings
++loadCalendarWeather()
++processSensorReadings()
++calculateSchedule()
++checkFreshness()
++evaluateTriggers()
++buildSnapshot()
++handleUserInput()
+}
+
+class RecommendationService {
+<<SWE>>
+-model
+-generationDeadline
++generateBriefing()
++answerContextQuestion()
++validateEvidence()
++rejectObsoleteResult()
++generateFactualFallback()
++cancelGeneration()
+}
+
+class NotificationService {
+<<SWE>>
+-activeNotice
+-audioQueue
+-muted
+-focusEnabled
++selectPriorityNotice()
++applyDeliveryPolicy()
++publishNotice()
++generateSpeech()
++acknowledgeNotice()
++setMute()
++setFocus()
++cancelExpiredOutputs()
+}
+
+class DataRepository {
+<<SWE>>
+-settings
+-savedEvidence
+-noticeHistory
++saveSettings()
++restoreSettings()
++saveEvidence()
++saveAcknowledgement()
++writeDiagnosticLog()
++removeExpiredData()
+}
+
+class Simulator {
+<<SWE_Testing>>
+-scenario
+-virtualClock
++loadScenario()
++provideSimulatedReadings()
++advanceTime()
++simulateDeviceFailure()
++simulateModelFailure()
++checkExpectedResults()
+}
+
+class HardwareGateway {
+<<Hardware_Software_Linux>>
+-connectedModules
+-connectionState
+-firmwareVersion
++discoverDevices()
++readSensorData()
++readControlEvents()
++sendOutputCommand()
++configurePeripheral()
++getDeviceHealth()
++reconnectBridge()
+}
+
+class SensorController {
+<<Hardware_Software_MCU>>
+-thermo
+-light
+-distance
++readTemperatureHumidity()
++readAmbientLight()
++readDistance()
++validateReading()
++reportSensorFailure()
+}
+
+class InputController {
+<<Hardware_Software_MCU>>
+-buttons
+-knob
++readButtons()
++readKnobRotation()
++readKnobPress()
++debounceInputs()
++emitControlEvent()
++requestLocalBuzzerStop()
+}
+
+class OutputController {
+<<Hardware_Software_MCU>>
+-pixels
+-buzzer
+-outputLease
++setPixelPattern()
++setPixelBrightness()
++playBoundedTone()
++stopBuzzer()
++validateCommand()
++applyWatchdogSafeState()
+}
+
+class PeripheralAdapter {
+<<Hardware_Software_Linux>>
+-touchscreen
+-bluetoothEndpoint
+-audioState
++initializeDisplayAndTouch()
++setDisplayBrightness()
++discoverAndPairSpeaker()
++checkAudioReadiness()
++playAudio()
++stopAudio()
++reportPeripheralFailure()
+}
+
+UserInterface --> ContextEngine : questions and settings
+UserInterface --> NotificationService : acknowledge, mute, Focus
+NotificationService --> UserInterface : notices and status
+
+ContextEngine --> RecommendationService : requests grounded advice
+ContextEngine --> NotificationService : submits eligible notices
+ContextEngine --> DataRepository : context and preferences
+NotificationService --> DataRepository : acknowledgements and logs
+
+ContextEngine --> HardwareGateway : readings, controls, health
+NotificationService --> HardwareGateway : approved output requests
+
+HardwareGateway --> SensorController : acquires readings
+HardwareGateway --> InputController : receives input events
+HardwareGateway --> OutputController : dispatches bounded commands
+HardwareGateway --> PeripheralAdapter : display and Bluetooth
+
+InputController --> OutputController : immediate local buzzer stop
+
+Simulator ..> ContextEngine : labeled test context
+Simulator ..> RecommendationService : model fault tests
+Simulator ..> HardwareGateway : contract and recovery tests
+
+classDef swe fill:#fff3bf,stroke:#354655,color:#17212b
+classDef hardware fill:#dceefa,stroke:#354655,color:#17212b
+classDef testing fill:#eee4fa,stroke:#354655,color:#17212b
+
+class UserInterface,ContextEngine,RecommendationService,NotificationService,DataRepository swe
+class HardwareGateway,SensorController,InputController,OutputController,PeripheralAdapter hardware
+class Simulator testing

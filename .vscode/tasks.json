@@ -1,0 +1,21 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "ContextCue: test gateway",
+      "type": "process",
+      "command": "python3",
+      "args": ["-m", "unittest", "discover", "-s", "tests", "-v"],
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "ContextCue: compile UNO Q firmware",
+      "type": "process",
+      "command": "arduino-cli",
+      "args": ["compile", "--profile", "unoq", "${workspaceFolder}/apps/contextcue_hardware/sketch"],
+      "group": "build",
+      "problemMatcher": ["$gcc"]
+    }
+  ]
+}
