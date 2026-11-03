@@ -23,6 +23,109 @@ The existing Thermo implementation is in
 is `apps/contextcue_hardware/sketch/sketch.ino`, and the Linux gateway is
 `apps/contextcue_hardware/python/contextcue/gateway.py`.
 
+## Final plan review status
+
+This plan review does not implement source code. Development may begin only
+after the readiness gates in this document are satisfied. The current Thermo
+path is ready for incremental extension; Light, Distance, Pixels, Buzzer,
+touchscreen, Bluetooth audio, live providers, and the local LLM remain
+implementation work.
+
+The plan must be executed in thin vertical slices:
+
+1. Prove one hardware device with the official Arduino example/API.
+2. Integrate that device into the MCU cached-state contract.
+3. Decode it on Linux and prove failure/recovery behavior.
+4. Only then allow application policy to consume it.
+
+No application behavior may depend on a module that has not passed its
+physical bring-up gate.
+
+## Official Arduino reuse findings
+
+Before writing device drivers, reuse the pinned `Arduino_Modulino` library and
+its official examples. The library already supplies the required device
+abstractions over I2C:
+
+- **Thermo:** existing project code uses `Modulino.begin(Wire1)` and the
+  library's Thermo API.
+- **Light:** Arduino's official `Light_Basic` example uses
+  `ModulinoLight`, `light.begin()`, `light.update()`, `getAL()` for ambient
+  light in lux, and `getIR()` for infrared. Use `getAL()` for the first
+  ContextCue metric; do not reimplement the optical sensor protocol.
+- **Distance:** the official `Distance_Basic` example uses
+  `ModulinoDistance`, `distance.begin()`, `distance.available()`, and
+  `distance.get()` in millimeters. Preserve the `available()` check and map
+  invalid/`NaN` results to the project quality contract.
+- **Pixels:** the official Pixels API provides `set(index, color, brightness)`,
+  `clear()`, and `show()` for eight RGB LEDs. Build ContextCue patterns on
+  these calls rather than accessing the LED controller directly.
+- **Buzzer:** the official Buzzer API provides `tone(frequency, duration)` and
+  `noTone()`. The project must wrap these calls with its own duration,
+  session, lease, mute, and duplicate-command limits.
+
+References to pin and verify during implementation:
+
+- [Arduino Modulino library API](https://github.com/arduino-libraries/Arduino_Modulino/blob/main/docs/api.md)
+- [Light Basic example](https://github.com/arduino-libraries/Arduino_Modulino/blob/main/examples/Modulino_Light/Light_Basic/Light_Basic.ino)
+- [Distance Basic example](https://github.com/arduino-libraries/Arduino_Modulino/blob/main/examples/Modulino_Distance/Distance_Basic/Distance_Basic.ino)
+- [Pixels Basic example](https://github.com/arduino-libraries/Arduino_Modulino/blob/main/examples/Modulino_Pixels/Pixels_Basic/Pixels_Basic.ino)
+- [Buzzer Basic example](https://github.com/arduino-libraries/Arduino_Modulino/blob/main/examples/Modulino_Buzzer/Buzzer_Basic/Buzzer_Basic.ino)
+- [Modulino Light documentation](https://docs.arduino.cc/hardware/modulino-light/)
+- [Modulino Distance documentation](https://docs.arduino.cc/hardware/modulino-distance/)
+
+The exact library commit/version must be pinned in `sketch/sketch.yaml` and
+recorded in the bring-up report. If the installed version differs from these
+references, stop and re-check method names, units, range behavior, and
+examples before coding against it.
+
+## Resolved product decisions
+
+- Use the **Distance** module, not a motion sensor, for proximity.
+- Distance may wake the UI and provide a routing hint, but it must not infer
+  identity, occupancy, attention, sleep, or absence.
+- Use **LLM-generated briefings** as the intended recommendation behavior.
+- Keep deterministic templates as a clearly labeled fallback when generation
+  fails; fallback text does not count as successful LLM acceptance.
+- Support fixed/demo and live calendar sources side by side.
+- Initially support live calendar providers through separate adapters for
+  Google Calendar and Microsoft 365 / Outlook Calendar.
+- Use fixed/demo sources for the Qualcomm demonstration.
+- Use Pixels and Buzzer as the selected outputs; do not add a separate demo
+  light to the required product path.
+- Do not include a physical Knob; use the touchscreen for speech-volume
+  control and the active notice's Why view.
+- Require confirmed, allowlisted, bounded output commands.
+- Suppress automatic speech and Buzzer output when Distance is clear and the
+  device has remained idle for the configured long-idle interval, or when
+  automatic Buzzer output is suppressed. Keep the notification visual and
+  allow explicit playback when otherwise eligible.
+- When the user appears away, announce a reminder at most once only if
+  away-mode audio is explicitly enabled and Bluetooth is connected.
+- When Bluetooth is disconnected, queue ordinary reminders silently and show
+  a summary when the user returns.
+- Do not repeat unanswered reminders indefinitely. Only reminders explicitly
+  marked important may use a bounded repeat policy.
+- Do Not Disturb suppresses ordinary sounds and collects reminders for later.
+- Keep camera gestures as a stretch feature, limited to acknowledging a notice,
+  disabled by default, and outside the core acceptance path.
+
+The following decisions remain open and must not be hidden inside irreversible
+interfaces:
+
+- The exact long-idle interval and the behavior for unknown Distance readings.
+- The exact local model, runtime, timeout, memory budget, and fallback format.
+- The final UNO Q Linux touchscreen device/API and display toolkit.
+- The Linux Bluetooth audio backend, endpoint identity model, and absolute
+  volume support.
+- The exact Clerk OAuth flow, provider scopes, token storage, and reauth UX.
+- Open-Meteo attribution, rate, terms, location-resolution, and caching policy.
+- The final Bridge response shape after measuring encoded size and latency.
+- Whether all five selected Modulinos can share the intended Qwiic topology
+  without address conflicts or power/throughput problems.
+- The long-idle timer, away-mode transition/grace period, return-summary
+  rules, and bounded important-reminder repeat count.
+
 ## Guiding rules
 
 - Define shared contracts before adding new behavior.
@@ -34,6 +137,10 @@ is `apps/contextcue_hardware/sketch/sketch.ino`, and the Linux gateway is
 - Do not advertise a module until it is implemented and verified.
 - Keep output commands bounded and allowlisted.
 - Validate real hardware behavior separately from unit-test behavior.
+- Do not infer units, ranges, timing, or availability from a product name;
+  verify them against the installed library, datasheet, and assembled board.
+- Pin every firmware/library/Python dependency before collecting acceptance
+  evidence.
 
 ## Phase 0: Establish shared contracts
 
@@ -45,8 +152,6 @@ Use these module IDs:
 thermo
 light
 distance
-buttons
-knob
 pixels
 buzzer
 ```
@@ -112,6 +217,34 @@ Extend `HardwareCapabilities` to report, where supported:
 - Driver and library versions
 - Output patterns and limits
 
+### 0.5 Freeze the build and hardware manifest
+
+Before adding the second module:
+
+1. Record the UNO Q board, Linux image, Zephyr/core version, RouterBridge,
+   RPClite, `Arduino_Modulino`, and sensor dependency versions.
+2. Keep the existing pins in `sketch/sketch.yaml` unless an upgrade is
+   justified by a failed requirement and revalidated.
+3. Record each module's exact product variant, I2C address, cable topology,
+   power state, and physical mounting position.
+4. Confirm the Qwiic bus used by the UNO Q is `Wire1`; do not assume the
+   Arduino UNO default `Wire` bus applies.
+5. Capture a clean baseline: compile, existing gateway tests, Thermo readings,
+   Bridge reconnect, and MCU reboot.
+
+The manifest is a prerequisite for all physical acceptance results. A test
+result without its board, firmware, library, and wiring identity is not
+reproducible.
+
+### 0.6 Prove the shared Qwiic topology
+
+Use the official library's initialization path and an instrumented bring-up
+sketch to verify that all selected modules can coexist. Record detected
+addresses, initialization order, bus errors, current draw if available, and
+whether any module requires a different startup delay. Resolve address
+collisions, cable/power limits, or unsupported combinations before
+implementing multi-module scheduling.
+
 ## Phase 1: Refactor the MCU sensor layer
 
 The current `SensorController` owns Thermo only. Expand it while keeping each
@@ -143,11 +276,11 @@ not make a valid Thermo sequence appear changed.
 
 Use the project targets:
 
-| Module | Target rate |
-|---|---:|
-| Thermo | 1 Hz |
-| Light | 5 Hz |
-| Distance | 10 Hz |
+| Module   | Target rate |
+| -------- | ----------: |
+| Thermo   |        1 Hz |
+| Light    |        5 Hz |
+| Distance |       10 Hz |
 
 Use separate due checks such as:
 
@@ -197,10 +330,12 @@ Continue the existing design:
 Before writing the driver:
 
 1. Confirm the physical Modulino Light model.
-2. Confirm its Arduino library and version.
-3. Identify the raw reading API.
-4. Determine whether the API returns lux or a raw value.
-5. Verify the supported sampling rate.
+2. Confirm the pinned Arduino library version and inspect the official
+   `Light_Basic` example.
+3. Use `ModulinoLight.begin()`, `update()`, and `getAL()` first.
+4. Confirm that the installed version returns ambient light in lux; otherwise
+   stop and revise the contract rather than relabeling raw data as lux.
+5. Verify the supported sampling rate and whether `update()` blocks.
 
 The project must not report lux until the raw-to-lux conversion is verified.
 
@@ -270,10 +405,12 @@ Cover:
 Before implementation:
 
 1. Confirm the Modulino Distance model.
-2. Confirm the installed library.
-3. Verify the measurement API.
-4. Identify valid and out-of-range values.
-5. Measure the useful range after mounting.
+2. Confirm the pinned library version and inspect the official
+   `Distance_Basic` example.
+3. Use `ModulinoDistance.begin()`, `available()`, and `get()`.
+4. Confirm how the installed version represents invalid readings, including
+   `NaN`, timeout, and no-new-sample cases.
+5. Measure the useful range and mounting effects on the assembled device.
 
 The project requires time-of-flight distance, not ultrasonic distance.
 
@@ -343,9 +480,9 @@ A possible structure is:
 {
   "v": "1.0",
   "boot": "...",
-  "thermo": {"seq": 7, "at": 11500, "q": "valid", "t": 24.2, "h": 45.0},
-  "light": {"seq": 42, "at": 11900, "q": "valid", "v": 0.68},
-  "distance": {"seq": 84, "at": 11950, "q": "valid", "mm": 430}
+  "thermo": { "seq": 7, "at": 11500, "q": "valid", "t": 24.2, "h": 45.0 },
+  "light": { "seq": 42, "at": 11900, "q": "valid", "v": 0.68 },
+  "distance": { "seq": 84, "at": 11950, "q": "valid", "mm": 430 }
 }
 ```
 
@@ -396,12 +533,12 @@ One missing sensor must not make the entire gateway fail.
 
 Use these limits:
 
-| Component | Expiration |
-|---|---:|
-| Thermo | 5 seconds |
-| Light | 2 seconds |
-| Distance | 2 seconds |
-| Bridge heartbeat | 3 seconds |
+| Component        | Expiration |
+| ---------------- | ---------: |
+| Thermo           |  5 seconds |
+| Light            |  2 seconds |
+| Distance         |  2 seconds |
+| Bridge heartbeat |  3 seconds |
 
 Report health separately for:
 
@@ -433,73 +570,24 @@ available_modules = ("thermo",)
 Once Light is implemented and detected, it can be added to
 `available_modules`.
 
-## Phase 6: Implement Buttons and Knob
+## Phase 6: Implement touchscreen controls
 
-Buttons and the Knob are input controls rather than environmental sensors.
+Touchscreen controls run on the UNO Q Linux side and are the only user input
+surface in the selected hardware.
 
-### 6.1 Add an InputController
+The touchscreen should provide:
 
-The MCU-side controller should:
+- Speech-volume adjustment for the selected Bluetooth speaker or headphones.
+- Navigation to the active notice's Why view.
+- Touch equivalents for acknowledgement, mute, and Focus.
 
-- Read Buttons
-- Read Knob rotation
-- Read Knob presses
-- Debounce inputs
-- Produce ordered control events
-- Request immediate local buzzer cancellation
+Volume changes belong to the Linux audio layer, not the MCU. Keep volume
+bounded from 0% through 100%, apply the selected endpoint's supported volume
+operation, and report unsupported or failed changes explicitly.
 
-### 6.2 Define ControlEvent
-
-Each event should include:
-
-- Event ID
-- Boot ID
-- Sequence number
-- Control ID
-- Event type
-- Rotation delta when applicable
-- Observation time
-
-Examples:
-
-```json
-{"control_id": "button_a", "event_type": "press"}
-```
-
-```json
-{"control_id": "knob", "event_type": "rotate", "delta": 2}
-```
-
-### 6.3 Add retained events
-
-Implement a 128-event ring buffer with:
-
-- Stable event IDs
-- Gateway acknowledgement
-- Visible overflow errors
-- No silent event loss
-
-Potential operations:
-
-```text
-read_state(after_event_seq)
-ack_events(boot_id, through_seq)
-```
-
-### 6.4 Debounce inputs
-
-Use the project targets:
-
-- Input scan: no slower than 20 ms
-- Stable debounce: approximately 30 ms
-
-Verify actual behavior on the board.
-
-### 6.5 Stop the local buzzer
-
-Designated controls should immediately stop the MCU buzzer even if Linux is
-temporarily unavailable. This does not stop Bluetooth audio, which remains a
-Linux responsibility.
+Touch input must be debounced by the Linux input layer, produce explicit
+acknowledgement, mute, Focus, navigation, and volume actions, and report
+unsupported or failed audio operations visibly.
 
 ## Phase 7: Implement Pixels and Buzzer
 
@@ -559,6 +647,14 @@ The MCU executes bounded commands. It does not decide:
 - Mute policy
 - Whether a model response is valid
 
+### 7.6 Prove official output behavior before policy integration
+
+Run the official Pixels and Buzzer examples on the assembled topology first.
+Confirm that `show()` is required for Pixels, that brightness is bounded as
+documented by the installed library, and that `noTone()` reliably stops a
+tone. Measure actual tone duration and Pixel update latency. Only then add
+the ContextCue command wrapper and lease behavior.
+
 ## Phase 8: Expand the Python gateway API
 
 Add gateway operations in dependency order.
@@ -571,12 +667,6 @@ read_state(after_event_seq=None)
 get_device_health()
 ```
 
-### Input events
-
-```python
-ack_events(boot_id, through_seq)
-```
-
 ### Outputs
 
 ```python
@@ -584,7 +674,7 @@ execute(command)
 heartbeat(session_id)
 ```
 
-### Later Linux peripherals
+### Linux peripherals
 
 ```python
 audio_discover()
@@ -607,30 +697,116 @@ The planned ContextEngine should:
 
 - Normalize sensor values
 - Check freshness
-- Load labeled calendar and weather fixtures
+- Load calendar and weather data through interchangeable adapters
 - Calculate schedule facts
 - Apply comfort rules
 - Apply proximity rules
 - Build immutable context snapshots
 - Decide when triggers are eligible
 
-### 9.2 Implement Thermo comfort policy
+### 9.2 Implement calendar and weather adapters
+
+Create a shared contract that both fixed/demo and live sources implement.
+Adapters translate provider-specific data into ContextCue events containing
+source identity, source mode, observation time, validity, freshness, and error
+information.
+
+Implement these initial adapters:
+
+- `FixtureCalendarAdapter`
+- `FixtureWeatherAdapter`
+- `GoogleCalendarAdapter`
+- `Microsoft365CalendarAdapter`
+
+The ContextEngine must not depend on Google or Microsoft-specific response
+formats. Fixed fixtures must remain available for offline development,
+repeatable tests, and the Qualcomm demonstration. Live providers must report
+authentication, network, rate-limit, malformed-response, and stale-data
+failures explicitly; they must never silently substitute simulated data.
+
+Use Clerk for application identity and the Google/Microsoft OAuth connection
+flow. Clerk supplies provider authorization; it is not a calendar adapter.
+The two calendar adapters remain responsible for calling Google Calendar or
+Microsoft Graph and translating provider responses into the shared ContextCue
+calendar contract.
+
+Live calendar setup is optional during onboarding. Users can continue with
+fixed/demo sources, or explicitly choose Google Calendar or Microsoft 365.
+The Qualcomm demonstration uses fixed/demo data and must not require Clerk or
+an internet connection.
+
+Keep provider tokens and secrets backend-only. Handle consent, token expiry,
+revocation, reauthorization, provider errors, and unavailable accounts
+explicitly. Use **Open-Meteo** as the selected initial live weather provider. Implement an
+`OpenMeteoWeatherAdapter` that returns the shared ContextCue weather contract.
+Verify coverage, usage terms, attribution requirements, freshness, rate
+handling, timeout behavior, malformed responses, and offline recovery before
+production deployment.
+
+Keep `FixtureWeatherAdapter` available for the Qualcomm demonstration,
+repeatable tests, and controlled failure scenarios. Live failures must remain
+visible and must never silently become simulated values.
+
+Calendar and weather adapters run on the UNO Q Linux side. The Linux
+application handles OAuth, provider API calls, caching, normalization,
+time-zone conversion, and freshness. The MCU receives none of the account
+credentials or external calendar data; it remains responsible for sensors,
+inputs, and bounded outputs.
+
+### 9.3 Implement Thermo comfort policy
 
 Use temperature and humidity together. Require persistence, apply hysteresis
 and cooldown, and stop the condition when readings become stale or unavailable.
 
-### 9.3 Implement Light policy
+### 9.4 Implement Light policy
 
 Map calibrated ambient level to screen and Pixel brightness. Respect manual
 brightness overrides and use the defined fallback brightness when Light is
 unavailable.
 
-### 9.4 Implement Distance policy
+### 9.5 Implement Distance policy
 
 Require near readings to persist for 500 ms, use separate near and clear
 thresholds, and avoid repeated wake events from a stationary object.
 
 Never infer identity, room occupancy, sleep, or attention.
+
+Automatic audio policy must also track the last meaningful user interaction.
+If Distance is clear and the device remains idle for the configured long-idle
+interval, suppress automatic speech and Buzzer output while retaining the
+visual notice. Explicit playback remains possible when the notice is valid,
+fresh, unacknowledged, and not blocked by mute or another policy.
+
+The resulting routing rules are:
+
+| Situation                                       | Behavior                                                                                          |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| User appears at the desk                        | Show the reminder; play one short chime or spoken notification if enabled.                        |
+| User appears away and Bluetooth is connected    | Announce once only when away-mode audio is enabled; keep the reminder pending on screen.          |
+| User appears away and Bluetooth is disconnected | Queue ordinary reminders silently; show a summary when the user returns.                          |
+| Do Not Disturb is enabled                       | Suppress ordinary sounds and collect reminders for later.                                         |
+| Reminder gets no response                       | Do not repeat indefinitely; allow limited repeats only for reminders explicitly marked important. |
+
+### 9.6 Implement the RecommendationService
+
+Build an asynchronous, bounded local LLM worker that receives an immutable
+context snapshot and produces a concise briefing or answer. It must support
+multiple categories, including morning, preparation, comfort, and bounded
+context questions.
+
+The service must:
+
+- Include evidence IDs and the request/snapshot revision in each result.
+- Enforce generation deadlines and output-size limits.
+- Prevent model output from issuing hardware commands.
+- Validate every factual claim against current evidence.
+- Reject obsolete, malformed, unsupported, or expired results.
+- Cancel or invalidate late results after relevant context changes.
+- Produce a clearly labeled factual fallback when generation fails.
+
+Benchmark the selected model and runtime on the UNO Q before treating LLM
+generation as accepted. Record latency, memory use, output limits, and failure
+behavior.
 
 ## Phase 10: Implement notifications and UI
 
@@ -645,8 +821,8 @@ Implement the planned notification behavior:
 - Mute
 - Quiet hours
 - Visual output
-- Optional buzzer output
-- Optional Bluetooth audio
+- Confirmed Pixel and Buzzer output
+- Bluetooth audio subject to policy and endpoint readiness
 
 The flow should be:
 
@@ -660,6 +836,14 @@ HardwareGateway
 ```
 
 The MCU must not bypass application policy.
+
+### 10.1 Implement the camera stretch feature only after the core path
+
+Keep camera capture and gesture recognition disabled by default. If the stretch
+feature is attempted, allow only a deliberate gesture that acknowledges a
+notice. Require a reliability gate, including controlled accuracy tests and
+zero unsafe actions. Failure of this feature must not affect the core product
+or demonstration.
 
 ## Phase 11: Testing strategy
 
@@ -680,7 +864,42 @@ Use fake Bridge responses to test:
 Extend `tests/test_gateway.py` or add focused test modules as the gateway
 surface grows.
 
-### 11.2 Firmware tests
+Also test the output, policy, and adapter contracts without hardware:
+
+- Allowlisted commands, bounds, expiration, session identity, and duplicate
+  handling.
+- Output lease expiry and recovery after reconnect.
+- Clear/near hysteresis, persistence, stale/unknown Distance, and long-idle
+  audio suppression.
+- At-desk, away-mode opt-in, disconnected Bluetooth, Do Not Disturb, return
+  summary, acknowledgement, expiration, and bounded important-reminder
+  repeats.
+- Fixture/live adapter normalization, malformed data, timeout, rate limit,
+  token expiry, revoked consent, stale cache, and no silent fixture fallback.
+- Touchscreen actions, volume bounds, unsupported endpoint operations, and
+  explicit error presentation.
+- Recommendation evidence validation, obsolete-result cancellation, timeout,
+  and labeled fallback behavior.
+
+Every test must assert both the action and the observable reason/state. A
+successful function return alone is not proof that audio was heard or that a
+Pixel/Buzzer physically changed state.
+
+### 11.2 Build and static validation
+
+At each vertical slice, run:
+
+1. `git diff --check`.
+2. The repository gateway test task:
+   `python3 -m unittest discover -s tests -v`.
+3. The pinned Arduino CLI compile task for the UNO Q sketch.
+4. Python import/compile checks and type/lint checks when configured.
+5. A protocol fixture compatibility test against the previous Thermo-only
+   response.
+
+Do not treat a laptop-only test pass as board validation.
+
+### 11.3 Firmware tests
 
 Test where practical:
 
@@ -694,8 +913,10 @@ Test where practical:
 - Duplicate command handling
 - Output lease expiry
 - Safe output state
+- Official library initialization failures and no-new-data behavior
+- Non-blocking main-loop behavior while Bridge callbacks are serviced
 
-### 11.3 Physical board verification
+### 11.4 Physical board verification
 
 Unit tests cannot validate:
 
@@ -716,6 +937,32 @@ Record:
 - Measured sampling rates
 - Calibration values
 - Timing and acquisition delays
+- Qwiic addresses, topology, cable lengths, and power observations
+- Pixels `show()` behavior and Buzzer `noTone()` stop behavior
+- UI touch latency, Bluetooth endpoint loss/reconnect, and audio routing
+
+### 11.5 Acceptance gates
+
+Do not advance to the next layer until the current gate passes:
+
+1. **Hardware gate:** official Arduino example works on the exact assembled
+   module and the result is recorded with versions and wiring.
+2. **Firmware gate:** cached acquisition is non-blocking, bounded, sequenced,
+   and recovers from disconnects.
+3. **Protocol gate:** encoded responses fit the measured limit and preserve
+   independent module failures.
+4. **Gateway gate:** strict decoding, freshness, reboot, and health behavior
+   pass automated tests.
+5. **Output gate:** Pixels/Buzzer commands are bounded and lease-safe on real
+   hardware.
+6. **Policy gate:** deterministic notification/audio scenarios pass with
+   fixtures and simulated failures.
+7. **Provider gate:** live adapters pass consent, expiry, outage, freshness,
+   and no-fallback tests; the demo still works offline.
+8. **LLM gate:** the selected local model meets the recorded latency,
+   memory, evidence-grounding, and failure criteria on the UNO Q.
+9. **System gate:** two clean setup/recovery runs complete and all failures
+   remain visible without unsafe or repeated output.
 
 ## Recommended implementation order
 
@@ -726,16 +973,65 @@ Record:
 5. Multi-module Bridge response
 6. Python gateway decoding and health
 7. Physical sensor calibration
-8. `InputController`
-9. Event retention and acknowledgement
-10. `OutputController`
-11. Output lease and safe state
-12. `ContextEngine`
-13. `NotificationService`
-14. Peripheral and audio adapter
-15. User interface
-16. Full integration and acceptance testing
+8. Calendar/weather adapter contracts and fixed fixtures
+9. Google Calendar and Microsoft 365 adapters
+10. Touchscreen controls and acknowledgement
+11. `OutputController`
+12. Output lease and safe state
+13. `ContextEngine`
+14. RecommendationService and local LLM validation
+15. `NotificationService`
+16. Peripheral and audio adapter
+17. User interface
+18. Optional camera gesture experiment
+19. Full integration and acceptance testing
 
 The critical dependency is reliable hardware contracts before application
 behavior. This prevents ContextCue from making decisions based on unclear,
 stale, invalid, or fabricated sensor data.
+
+## Final readiness assessment
+
+### Ready to begin
+
+- Preserve and baseline the existing Thermo/Bridge/Gateway path.
+- Freeze versions and create the hardware manifest.
+- Prove the five-module Qwiic topology.
+- Use the official `Arduino_Modulino` APIs and examples for Light, Distance,
+  Pixels, and Buzzer.
+- Add contract tests and protocol-size measurements before changing the
+  response shape.
+
+### Requires investigation before implementation
+
+- Exact Light and Distance library behavior at the pinned version, including
+  units, invalid values, blocking time, and sampling limits.
+- Whether all five modules coexist on the selected bus topology and power
+  budget.
+- Final Bridge response encoding and size.
+- Touchscreen and Bluetooth Linux APIs, endpoint/volume semantics, and failure
+  UX.
+- Away-mode, long-idle, unknown-Distance, Do Not Disturb, return-summary, and
+  important-repeat parameters.
+- Clerk scopes/token lifecycle and Open-Meteo operational requirements.
+- UNO Q local LLM runtime/model feasibility.
+
+### Technical risks
+
+- The plan's target sampling rates may exceed what the official drivers,
+  shared I2C bus, Bridge transport, or main loop can sustain.
+- A response that fits as JSON may not fit after Bridge encoding or future
+  error fields are added.
+- Distance and Light readings depend on mounting, reflective surfaces, and
+  calibration; nominal datasheet behavior is not desk-level behavior.
+- Bluetooth connection does not prove that a person heard audio.
+- A local LLM may fail the UNO Q memory or latency budget.
+- Provider authentication, network failure, and stale caches can produce
+  misleading context unless every state is labeled.
+
+### Required review outcome
+
+The plan is suitable for development planning, but it is **not yet a
+pass-through implementation checklist**. The first work item must be the
+manifest/topology/API verification gate. Any failed gate must update the
+contract and acceptance tests before dependent implementation continues.

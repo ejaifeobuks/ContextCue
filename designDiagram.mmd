@@ -86,7 +86,6 @@ class HardwareGateway {
 -firmwareVersion
 +discoverDevices()
 +readSensorData()
-+readControlEvents()
 +sendOutputCommand()
 +configurePeripheral()
 +getDeviceHealth()
@@ -103,18 +102,6 @@ class SensorController {
 +readDistance()
 +validateReading()
 +reportSensorFailure()
-}
-
-class InputController {
-<<Hardware_Software_MCU>>
--buttons
--knob
-+readButtons()
-+readKnobRotation()
-+readKnobPress()
-+debounceInputs()
-+emitControlEvent()
-+requestLocalBuzzerStop()
 }
 
 class OutputController {
@@ -157,11 +144,8 @@ ContextEngine --> HardwareGateway : readings, controls, health
 NotificationService --> HardwareGateway : approved output requests
 
 HardwareGateway --> SensorController : acquires readings
-HardwareGateway --> InputController : receives input events
 HardwareGateway --> OutputController : dispatches bounded commands
 HardwareGateway --> PeripheralAdapter : display and Bluetooth
-
-InputController --> OutputController : immediate local buzzer stop
 
 Simulator ..> ContextEngine : labeled test context
 Simulator ..> RecommendationService : model fault tests
@@ -172,5 +156,5 @@ classDef hardware fill:#dceefa,stroke:#354655,color:#17212b
 classDef testing fill:#eee4fa,stroke:#354655,color:#17212b
 
 class UserInterface,ContextEngine,RecommendationService,NotificationService,DataRepository swe
-class HardwareGateway,SensorController,InputController,OutputController,PeripheralAdapter hardware
+class HardwareGateway,SensorController,OutputController,PeripheralAdapter hardware
 class Simulator testing

@@ -32,10 +32,13 @@ state on Linux. It implements the first SensorController/HardwareGateway slice.
    samples: `temperature` in `degC` and `humidity` in `%RH`, plus separate Bridge
    and Thermo health. Values depend on the actual hardware.
 
-The MCU attempts one acquisition per second. Linux polls every 100 ms and emits
-new samples or health changes. A valid zero remains zero. A failed initialization,
-non-finite reading or out-of-range reading has null values and a reason. A
-connected Bridge can coexist with a failed Thermo.
+The MCU attempts one Thermo acquisition per second. The sensor controller now
+keeps independent Thermo, Light, and Distance reading state and reserves the
+target schedules for Light (5 Hz) and Distance (10 Hz); only Thermo acquisition
+is enabled in this milestone. Linux polls every 100 ms and emits new samples or
+health changes. A valid zero remains zero. A failed initialization, non-finite
+reading or out-of-range reading has null values and a reason. A connected
+Bridge can coexist with a failed Thermo.
 
 The app can start without Thermo: expect `thermo_not_found`, null values and
 unavailable sensor health. It retries discovery on the next acquisition interval.
@@ -173,7 +176,7 @@ do not validate physical measurements, I2C electrical behavior or audible output
 
 ## Scope of this milestone
 
-Only Thermo is configured/advertised. Light, Distance, Buttons, Knob, Pixels,
+Only Thermo is configured/advertised. Light, Distance, Pixels,
 Buzzer, display/touch, Bluetooth, output leases, control-event retention,
 ContextEngine, persistence, notices, model generation and the UI are subsequent
 implementation work. There are no output commands or audio actions in this app.

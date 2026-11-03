@@ -13,5 +13,7 @@ constexpr char kModulinoVersion[] = "0.10.0";
 constexpr char kHsVersion[] = "1.0.1";
 constexpr char kShtVersion[] = "0.5.3";
 constexpr uint32_t kThermoIntervalMs = 1000;
+constexpr uint32_t kLightIntervalMs = 200;
+constexpr uint32_t kDistanceIntervalMs = 100;
 constexpr size_t kMaxJsonBytes = 224;
 }  // namespace contextcue

@@ -167,13 +167,12 @@ Runtime state has clear ownership: NotificationService owns mute/Focus; ContextE
 |---|---|
 | `discoverDevices()` | Discover configured devices and report capabilities or missing modules. |
 | `readSensorData()` | Retrieve samples and preserve sequence, validity and observation metadata. |
-| `readControlEvents()` | Retrieve retained button/knob events with stable identities. |
 | `sendOutputCommand()` | Route approved bounded output requests and report command outcomes. |
 | `configurePeripheral()` | Apply supported display/audio setup requests through PeripheralAdapter. |
 | `getDeviceHealth()` | Aggregate device, Bridge and peripheral health for the application. |
 | `reconnectBridge()` | Reconnect, detect resets, invalidate stale state and resynchronize safely. |
 
-**Relationships:** ContextEngine and NotificationService are its application clients. It communicates with SensorController, InputController and OutputController through Bridge, and uses PeripheralAdapter for Linux devices. Simulator tests its contract/recovery behavior.
+**Relationships:** ContextEngine and NotificationService are its application clients. It communicates with SensorController and OutputController through Bridge, and uses PeripheralAdapter for Linux devices. Simulator tests its contract/recovery behavior.
 
 ## 8 SensorController
 
@@ -197,29 +196,7 @@ Runtime state has clear ownership: NotificationService owns mute/Focus; ContextE
 
 **Relationships:** Supplies readings and failures to HardwareGateway. ContextEngine interprets them as comfort, brightness or proximity evidence; this class does not infer identity or room occupancy.
 
-## 9 InputController
-
-**Owner:** Hardware software team - MCU
-
-**Purpose:** Acquires physical controls on the MCU, produces clean events and supports immediate local buzzer cancellation.
-
-**Attributes**
-
-- `buttons` - The Buttons module state and debounce/event tracking.
-- `knob` - The Knob rotation/press state and event tracking.
-
-| Method | Responsibility |
-|---|---|
-| `readButtons()` | Read button states and identify stable transitions. |
-| `readKnobRotation()` | Read encoder movement and report its direction/delta. |
-| `readKnobPress()` | Read the knob push action. |
-| `debounceInputs()` | Filter contact noise so one action produces one event. |
-| `emitControlEvent()` | Publish an ordered identified event for application handling. |
-| `requestLocalBuzzerStop()` | Ask OutputController to silence the buzzer immediately for the designated controls. |
-
-**Relationships:** HardwareGateway retrieves its events; ContextEngine applies semantic mappings. Its direct OutputController relationship enables local buzzer stop during Linux application failure, while the MCU and bus remain operational.
-
-## 10 OutputController
+## 9 OutputController
 
 **Owner:** Hardware software team - MCU
 
@@ -240,9 +217,9 @@ Runtime state has clear ownership: NotificationService owns mute/Focus; ContextE
 | `validateCommand()` | Check action, parameters, expiry/session and duplicate-command handling. |
 | `applyWatchdogSafeState()` | Silence the buzzer and turn pixels off when the output lease expires. |
 
-**Relationships:** Receives bounded commands from HardwareGateway and local buzzer-stop requests from InputController. It does not decide notice priority or bypass application mute/Focus policy.
+**Relationships:** Receives bounded commands from HardwareGateway. It does not decide notice priority or bypass application mute/Focus policy.
 
-## 11 PeripheralAdapter
+## 10 PeripheralAdapter
 
 **Owner:** Hardware software team - Linux
 

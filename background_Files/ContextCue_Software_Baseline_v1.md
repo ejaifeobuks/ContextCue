@@ -15,7 +15,7 @@ Direct user decisions take precedence, then the October 3 PRD and revised propos
 | LLM | Actual generation required. Factual fallback is required failure behavior but cannot pass generation acceptance. No direct hardware authority or invented source facts. |
 | Deployment | UNO Q is the target, subject to benchmarking. An explicitly disclosed off-board contingency requires a deployment decision and does not meet the on-board goal. No silent cloud fallback. |
 | Calendar/weather | Visibly labeled deterministic fictional fixtures; live providers deferred. Indoor sensing cannot substitute for outdoor forecasts. |
-| Panel | Seven selected Modulinos: Thermo, Light, Distance, Buttons, Knob, Pixels, Buzzer. Three sensing modules, two inputs, two outputs. |
+| Panel | Five selected Modulinos: Thermo, Light, Distance, Pixels, Buzzer. Three sensing modules, no physical input module, two outputs; touchscreen is a separate Linux input. |
 | Approach/wake | Calibrated Distance proximity and explicit input replace older PIR/motion wording. Nearby object does not mean identified person or occupied room. |
 | Camera/microphone | Brio 105 is owned but capture, inference, gestures, speech recognition and wake word are deferred. Capture stays off; spoken output does not require a microphone. |
 | Other hardware | Joystick, Movement, Vibro, Latch Relay, servo and separate lamp have no mandatory deliverable. |
@@ -51,7 +51,7 @@ flowchart TB
     end
     Core <-->|Telemetry, controls, health and commands| Gateway
     Router <-->|Playback, stop and status| Gateway
-    MCU <-->|Qwiic I2C| Panel[Seven selected Modulinos]
+    MCU <-->|Qwiic I2C| Panel[Six selected Modulinos]
     Gateway <--> Screen[Display and USB touch]
   end
   Person <--> UI
@@ -107,8 +107,8 @@ All rows are mandatory. Reference these IDs in tickets/tests. User-selectable au
 | APP-19 SWE | Simulator/fault harness uses production contracts. | Laptop development possible; simulation labels survive all stages. |
 | APP-20 SWE | Synthetic demo schedules, redacted secrets, capture off. | No personal calendar exposure, raw media retention or unapproved external inference. |
 | HW-01 Hardware software | Thermo/Light/Distance with units, sequence, observation and validity. | Zero differs from unavailable; disconnect/reset/range errors visible. |
-| HW-02 Hardware software | Debounced Buttons/Knob with event identity. | Duplicates do not create extra actions; overflow reported. |
-| HW-03 Hardware software | Bounded Pixels/Buzzer, quiet boot, local buzzer stop on A/B. | Invalid/expired commands rejected; no duplicate tones; local stop during Linux app failure. |
+| HW-02 Hardware software | Linux touchscreen controls with explicit action results. | Unsupported or failed actions are visible; no silent volume or notification failures. |
+| HW-03 Hardware software | Bounded Pixels/Buzzer with quiet boot. | Invalid/expired commands rejected; no duplicate tones; lease loss turns outputs off. |
 | HW-04 Hardware software | Bridge/gateway/discovery/heartbeat/reconnect. | Reset detected; stale state invalidated; only current outputs restored. |
 | HW-05 Hardware software | Actual display/touch/Bluetooth and brightness support. | Touch orientation, audible test, stop/readiness verified. |
 | HW-06 Hardware software | Manifest, calibration, nonintrusive self-test. | Missing required modules named; no false readiness; camera absence acceptable. |
@@ -123,14 +123,16 @@ All rows are mandatory. Reference these IDs in tickets/tests. User-selectable au
 | Thermo | Temperature degC; humidity %RH | Indoor comfort; replaces old DHT11 assumptions |
 | Light | Verified ambient value; normalized level | Brightness; report lux only after verified conversion |
 | Distance | ToF distance mm; validity/out-of-range | Near-object wake, not person/occupancy identification |
-| Buttons | A/B/C debounced presses | A acknowledges; B toggles global mute; C toggles Focus |
-| Knob | Rotation delta and press | Speech volume; press opens active notice's Why |
+| Touchscreen | Touch actions and slider values | Speech volume, navigation, and active notice's Why |
 | Pixels | Fixed pattern plus brightness | Cue/status with corresponding screen text |
 | Buzzer | Bounded short tone or stop | User-enabled attention tone, never a speech replacement |
 
 Distance is ToF rather than ultrasonic; Light is not a lamp; Buzzer is not a sound sensor. Movement is an IMU measuring its own movement, not PIR room motion. [V2-V4]
 
-A/B immediately silence the local Buzzer and emit their events; SWE applies acknowledgement/mute to the rest of the application. **The MCU cannot independently silence a Linux Bluetooth speaker during Linux failure.** These controls depend on the MCU/I2C bus and are not safety-rated emergency stops. On B press, the local buzzer remains inhibited until SWE acknowledges the input and synchronizes current mute state; reconnect never resumes a previous tone.
+The touchscreen is the sole user control surface for acknowledgement, mute,
+Focus, navigation, and speech volume. Linux applies these actions explicitly
+and reports failures; the MCU retains only bounded output enforcement and
+cannot independently silence a Linux Bluetooth speaker during Linux failure.
 
 ## 5 Shared interfaces
 
@@ -221,16 +223,18 @@ These configurable v1 choices complete unspecified behavior; they are not measur
 | Setting | Default/behavior |
 |---|---|
 | Initial settings | Normal, visual-only audio, Buzzer disabled. User enables an audio policy before playback. |
-| Controls | A acknowledge, B toggle mute, C toggle Focus. Knob volume +/-5 percentage points per detent, bounded 0-100%; press Why or display no active notice. Touch equivalents remain. |
+| Controls | Touchscreen acknowledges, toggles mute and Focus, opens Why, and controls speech volume from 0-100%. |
 | Morning | 06:00-11:00 local time; at most one automatically presented morning briefing per date. Focus defers; on-request remains available. Acknowledgement marks read. |
 | Preparation | Next valid event within 30 min; relevant valid weather location/interval; rain threshold >=50%. Do not invent departure/travel intervals. |
 | Schedule totals | Merge valid non-cancelled timed intervals intersecting local day; union duration avoids double count. All-day events display separately, not as 24 hours of work. |
 | Priority | P2 explicit request or event within 10 min; P1 other preparation; P0 morning/comfort. Ties: earliest expiry, oldest creation, ID. Desk cues are not emergency alarms. |
 | Focus | Defer unsolicited morning briefings and automatic speech. Keep quiet comfort/event visuals. Optional P2 preparation speech exception is off by default. |
 | Quiet hours | 22:00-07:00, no automatic speech/Buzzer even for P2. Explicit manual play may override Focus/quiet hours, never mute or invalid/expired evidence. |
-| Audio | visual_only blocks notice audio; Play offers a switch to on_request. on_request permits explicit playback. time_sensitive also permits automatic P2 subject to all controls. Pairing test speech is explicit and blocked by mute. One retry maximum. Unmute never auto-replays. Buzzer requires separate opt-in and obeys automatic-audio restrictions. |
+| Audio | visual_only blocks notice audio; Play offers a switch to on_request. At-desk reminders may play one short chime or spoken notice if enabled. Away-mode audio is opt-in and announces at most once when Bluetooth is connected. Disconnected ordinary reminders queue silently for a return summary. Do Not Disturb suppresses ordinary sounds. Clear Distance plus long idle suppresses automatic speech and Buzzer while retaining visuals. Pairing test speech is explicit and blocked by mute. Unanswered reminders do not repeat indefinitely; only explicitly important reminders may use a bounded repeat. One retry maximum. Unmute never auto-replays. Buzzer requires separate opt-in and obeys automatic-audio restrictions. |
 | Comfort | Preferred 20-26 degC and 30-60%RH; 60 s persistence; 15 min per-condition cooldown. Clear hot below 25.5, cold above 20.5, high RH below 55%, low RH above 35%. |
 | Proximity | Initial near <=500 mm; clear >650 mm; 500 ms valid persistence. Out-of-range means unknown. Validate/recalibrate after mounting. |
+| Availability routing | Clear Distance plus the configured long-idle interval suppresses automatic speech and Buzzer; visual notices remain available for later explicit playback. This does not claim user absence. |
+| Away-mode audio | Disabled by default. When enabled, a connected Bluetooth endpoint may announce an away reminder once; disconnected reminders remain queued silently. |
 | Wake/idle | Input or new near transition wakes UI; dim after 120 s without input/transition. No absence/sleep inference or repeated triggers from stationary objects. |
 | Brightness | Calibrated dark/bright values map to 20-100% screen and 5-40% Pixels; 2 s transition, manual override. Light failure: 60% screen/15% Pixels. No auto blackout. |
 | Sampling | Targets: Thermo 1 Hz, Light 5 Hz, Distance 10 Hz, input scan <=20 ms, 30 ms stable debounce. HW validates supported device rates. |
@@ -413,6 +417,5 @@ Official hardware references checked during review:
 - V1 [UNO Q manual](https://docs.arduino.cc/tutorials/uno-q/user-manual/): processors, Bridge and Qwiic boundary.
 - V2 [Thermo](https://docs.arduino.cc/hardware/modulino-thermo/) and [Distance](https://docs.arduino.cc/hardware/modulino-distance/): selected measurements.
 - V3 [Light datasheet](https://docs.arduino.cc/resources/datasheets/ABX00111-datasheet.pdf) and [Movement](https://docs.arduino.cc/hardware/modulino-movement/): ambient sensing versus IMU.
-- V4 [Buttons](https://docs.arduino.cc/hardware/modulino-buttons/) and [Modulino library](https://docs.arduino.cc/libraries/arduino_modulino/): device integration; pin installed versions at G1.
 
 Reconciliation is deliberate: LLM/Bluetooth required by current user decision; actual selected modules replace old DHT11/PIR/sound/actuator diagrams; proximity replaces claimed motion/occupancy; capture deferred; hardware software owns both Bridge ends and Linux device adapters; acknowledgement, mute, Focus and dimming remain separate. Mappings, defaults, retention and gateway limits introduced here are explicit v1 design decisions.
