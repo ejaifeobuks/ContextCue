@@ -88,7 +88,9 @@ void setup() {
 }
 
 void loop() {
-  sensors.readTemperatureHumidity(uptimeMs());
+  const uint64_t now = uptimeMs();
+  sensors.readThermoIfDue(now);
+  sensors.readLightIfDue(now);
   // Returning promptly lets the Arduino core dispatch provide_safe handlers.
   // No Bridge.call(), nested RPC or serial printing from RPC callbacks.
   delay(1);

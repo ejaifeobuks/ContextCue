@@ -15,5 +15,6 @@ constexpr char kShtVersion[] = "0.5.3";
 constexpr uint32_t kThermoIntervalMs = 1000;
 constexpr uint32_t kLightIntervalMs = 200;
 constexpr uint32_t kDistanceIntervalMs = 100;
+constexpr float kLightMaximumLux = 1000000.0f;
 constexpr size_t kMaxJsonBytes = 224;
 }  // namespace contextcue

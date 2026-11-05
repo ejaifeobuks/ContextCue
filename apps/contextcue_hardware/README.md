@@ -32,13 +32,15 @@ state on Linux. It implements the first SensorController/HardwareGateway slice.
    samples: `temperature` in `degC` and `humidity` in `%RH`, plus separate Bridge
    and Thermo health. Values depend on the actual hardware.
 
-The MCU attempts one Thermo acquisition per second. The sensor controller now
-keeps independent Thermo, Light, and Distance reading state and reserves the
-target schedules for Light (5 Hz) and Distance (10 Hz); only Thermo acquisition
-is enabled in this milestone. Linux polls every 100 ms and emits new samples or
-health changes. A valid zero remains zero. A failed initialization, non-finite
-reading or out-of-range reading has null values and a reason. A connected
-Bridge can coexist with a failed Thermo.
+The MCU attempts Thermo acquisition at 1 Hz and Light acquisition at 5 Hz. The
+sensor controller keeps independent Thermo, Light, and Distance reading state;
+Distance remains reserved for its 10 Hz schedule but is not implemented yet.
+The Light driver uses the pinned Modulino `begin()`, `update()`, and `getAL()`
+API and stores verified ambient values as lux. Linux still exposes the
+Thermo-only wire response until the multi-module protocol phase. A valid zero
+remains zero. A failed initialization, non-finite reading, or out-of-range
+reading has null values and a reason. A connected Bridge can coexist with a
+failed sensor.
 
 The app can start without Thermo: expect `thermo_not_found`, null values and
 unavailable sensor health. It retries discovery on the next acquisition interval.
@@ -54,7 +56,7 @@ arduino-cli compile --profile unoq apps/contextcue_hardware/sketch
 
 The profile downloads the exact board and library dependencies into Arduino CLI's
 managed storage. Arduino_Modulino includes headers for other modules, so its
-transitive libraries are declared even though this sketch reads only Thermo.
+transitive libraries are declared for reproducible compilation.
 Compilation does not upload anything. App Lab is the recommended way to deploy
 the paired MCU and Linux parts together; uploading only the sketch does not start
 the Python gateway.
@@ -176,7 +178,9 @@ do not validate physical measurements, I2C electrical behavior or audible output
 
 ## Scope of this milestone
 
-Only Thermo is configured/advertised. Light, Distance, Pixels,
+Thermo is configured/advertised through the current gateway protocol. Light is
+acquired and validated on the MCU but is not yet advertised because the
+multi-module Bridge response belongs to the next protocol phase. Distance, Pixels,
 Buzzer, display/touch, Bluetooth, output leases, control-event retention,
 ContextEngine, persistence, notices, model generation and the UI are subsequent
 implementation work. There are no output commands or audio actions in this app.
