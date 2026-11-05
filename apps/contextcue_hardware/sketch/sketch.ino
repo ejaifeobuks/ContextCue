@@ -1,24 +1,36 @@
 // ContextCue first hardware milestone: Thermo -> Bridge -> Linux gateway.
-// All callbacks and sensor access run in loop context via provide_safe().
+// Sensor access stays in loop(); RPC callbacks read a protected published copy.
 #include <Arduino_RouterBridge.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <zephyr/kernel.h>
 
 #include "Config.h"
 #include "SensorController.h"
 
 contextcue::SensorController sensors;
-char bootId[33] = "";
 
-// Extend the 32-bit millis counter without guessing Linux wall-clock time.
-// Called only in the main thread, at least once every millis wrap period.
+struct PublishedState {
+  contextcue::ThermoReading thermo;
+  const char* driver = "none";
+  char bootId[33] = "";
+};
+
+K_MUTEX_DEFINE(stateMutex);
+PublishedState publishedState;
+
+// Zephyr's 64-bit kernel uptime is safe to read from either thread.
 uint64_t uptimeMs() {
-  static uint32_t previous = 0;
-  static uint64_t total = 0;
-  const uint32_t current = millis();
-  total += static_cast<uint32_t>(current - previous);
-  previous = current;
-  return total;
+  return static_cast<uint64_t>(k_uptime_get());
+}
+
+// Only loop/setup touches SensorController. Never hold this lock across I2C.
+void publishState() {
+  k_mutex_lock(&stateMutex, K_FOREVER);
+  publishedState.thermo = sensors.reading();
+  publishedState.driver = sensors.libraryName();
+  k_mutex_unlock(&stateMutex);
 }
 
 String checkedJson(const char* buffer, int length) {
@@ -41,47 +53,67 @@ String openSession(String candidate) {
   // A Linux-generated UUID names this firmware boot. It is assigned once and
   // retained across gateway reconnects; MCU restart clears it. It is an epoch
   // identity, not authentication and not a persisted user preference.
-  if (bootId[0] == '\0') candidate.toCharArray(bootId, sizeof(bootId));
+  k_mutex_lock(&stateMutex, K_FOREVER);
+  if (publishedState.bootId[0] == '\0') {
+    candidate.toCharArray(publishedState.bootId, sizeof(publishedState.bootId));
+  }
+  const PublishedState state = publishedState;
+  k_mutex_unlock(&stateMutex);
   char buffer[contextcue::kMaxJsonBytes + 1];
   const int n = snprintf(
       buffer, sizeof(buffer),
       "{\"v\":\"%s\",\"fw\":\"%s\",\"boot\":\"%s\",\"ok\":%s,"
       "\"driver\":\"%s\",\"core\":\"%s\",\"bridge\":\"%s\",\"modulino\":\"%s\",\"hs\":\"%s\",\"sht\":\"%s\"}",
-      contextcue::kSchemaVersion, contextcue::kFirmwareVersion, bootId,
-      sensors.available() ? "true" : "false", sensors.libraryName(),
+      contextcue::kSchemaVersion, contextcue::kFirmwareVersion, state.bootId,
+      state.thermo.available ? "true" : "false", state.driver,
       contextcue::kCoreVersion, contextcue::kBridgeVersion,
       contextcue::kModulinoVersion, contextcue::kHsVersion, contextcue::kShtVersion);
   return checkedJson(buffer, n);
 }
 
 String readState() {
+  k_mutex_lock(&stateMutex, K_FOREVER);
+  const PublishedState state = publishedState;
+  k_mutex_unlock(&stateMutex);
+  // Read time after the snapshot so its observation cannot be in the future.
   const uint64_t now = uptimeMs();
-  const auto& sample = sensors.reading();
+  const auto& sample = state.thermo;
+  const char* quality = sample.quality;
+  const char* reason = sample.error;
   char temperature[20] = "null";
   char humidity[20] = "null";
   char error[64] = "null";
-  if (sample.error == nullptr) {
-    snprintf(temperature, sizeof(temperature), "%.2f", sample.temperature);
-    snprintf(humidity, sizeof(humidity), "%.2f", sample.humidity);
-  } else {
-    snprintf(error, sizeof(error), "\"%s\"", sample.error);
+  if (strcmp(quality, "valid") == 0) {
+    if (reason == nullptr && sample.available &&
+        isfinite(sample.temperature) && isfinite(sample.humidity)) {
+      snprintf(temperature, sizeof(temperature), "%.2f", sample.temperature);
+      snprintf(humidity, sizeof(humidity), "%.2f", sample.humidity);
+    } else {
+      quality = "invalid";
+      if (reason == nullptr) reason = "thermo_read_failed";
+    }
+  } else if (reason == nullptr) {
+    quality = "invalid";
+    reason = "thermo_read_failed";
   }
+  if (reason != nullptr) snprintf(error, sizeof(error), "\"%s\"", reason);
   char buffer[contextcue::kMaxJsonBytes + 1];
   const int n = snprintf(
       buffer, sizeof(buffer),
       "{\"v\":\"%s\",\"boot\":\"%s\",\"seq\":%llu,\"up\":%llu,\"at\":%llu,"
       "\"q\":\"%s\",\"t\":%s,\"h\":%s,\"d\":\"%s\",\"err\":%s}",
-      contextcue::kSchemaVersion, bootId,
+      contextcue::kSchemaVersion, state.bootId,
       static_cast<unsigned long long>(sample.sequence),
       static_cast<unsigned long long>(now),
       static_cast<unsigned long long>(sample.observedUptimeMs),
-      sample.quality, temperature, humidity, sensors.libraryName(), error);
+      quality, temperature, humidity, state.driver, error);
   return checkedJson(buffer, n);
 }
 
 void setup() {
   sensors.begin();
   sensors.readTemperatureHumidity(uptimeMs());
+  publishState();
   Bridge.begin();
   Bridge.provide_safe("cc_open", openSession);
   Bridge.provide_safe("cc_read", readState);
@@ -90,8 +122,9 @@ void setup() {
 void loop() {
   const uint64_t now = uptimeMs();
   sensors.readThermoIfDue(now);
+  publishState();
   sensors.readLightIfDue(now);
-  // Returning promptly lets the Arduino core dispatch provide_safe handlers.
+  // Keep callbacks safe even if the pinned RPC worker dispatches them early.
   // No Bridge.call(), nested RPC or serial printing from RPC callbacks.
   delay(1);
 }

@@ -143,7 +143,7 @@ Observation UTC is estimated from MCU observation age and the RPC midpoint;
 `clock_uncertainty_ms` reports half the round-trip time. This is not a precision
 clock synchronization guarantee. Monotonic Linux time determines freshness, so
 wall-clock changes cannot refresh a sample. Duplicate polls retain the original
-sample timestamps. Uptime extends the MCU's wrapping `millis()` counter to 64 bits.
+sample timestamps. MCU uptime uses Zephyr's thread-safe 64-bit kernel clock.
 
 Thermo data expires after five seconds even if the Bridge still answers. Health
 also expires after three seconds without a successful state poll. A failed RPC
@@ -151,10 +151,17 @@ immediately makes exposed cached values unavailable. The next poll rediscovers
 the peer; it never substitutes simulated values. Every RPC has a 750 ms deadline
 and executes in a worker thread so it does not block the application's event loop.
 
-MCU callbacks use `Bridge.provide_safe()` and serve cached samples in main-loop
-context. Sensor drivers run outside the callbacks. Driver-level I2C blocking on a
-faulted bus still needs measurement on the physical board; the Linux RPC deadline
-does not reset a hung MCU or guarantee bus recovery.
+MCU callbacks use `Bridge.provide_safe()`, but the pinned RouterBridge/RPClite
+versions can also dispatch them on the background RPC worker. Only setup/loop
+accesses SensorController. After acquisition finishes, the sketch publishes the
+complete reading and driver identity under a mutex. Callbacks copy that snapshot
+and the boot token under the same mutex, then serialize outside the lock. Polling
+during acquisition returns the previous completed sequence with its original
+timestamp; a completed failure publishes a new sequence with null values and a
+reason. No lock is held during I2C acquisition. Serialization also rejects
+non-finite values instead of emitting invalid JSON `nan` or `inf` tokens.
+Driver-level I2C blocking on a faulted bus still needs measurement on the physical
+board; the Linux RPC deadline does not reset a hung MCU or guarantee bus recovery.
 
 ## Board verification to record
 
@@ -175,6 +182,16 @@ does not reset a hung MCU or guarantee bus recovery.
 Local tests exercise malformed data, stale observations, duplicate/changed
 sequences, version mismatches, transport loss, reboot identity and recovery. They
 do not validate physical measurements, I2C electrical behavior or audible output.
+The firmware regression tests require a host `g++` with C++17 support and compile
+the actual sketch with stubbed hardware. Run them from the repository root:
+
+```bash
+python3 -m unittest discover -s tests -p test_firmware.py -v
+```
+
+They poll from another thread during sensor acquisition, verify completed
+failures/recovery and boot identity, reject non-finite JSON values, and stress
+concurrent publication across the 32-bit uptime boundary.
 
 ## Scope of this milestone
 
