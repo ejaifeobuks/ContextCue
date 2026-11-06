@@ -16,6 +16,35 @@
       "args": ["compile", "--profile", "unoq", "${workspaceFolder}/apps/contextcue-hardware/sketch"],
       "group": "build",
       "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "UNO Q: deploy and run",
+      "type": "process",
+      "command": "${workspaceFolder}/scripts/unoq.sh",
+      "args": ["run"],
+      "problemMatcher": []
+    },
+    {
+      "label": "UNO Q: logs (save to logs/)",
+      "type": "process",
+      "command": "${workspaceFolder}/scripts/unoq.sh",
+      "args": ["logs"],
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "UNO Q: stop",
+      "type": "process",
+      "command": "${workspaceFolder}/scripts/unoq.sh",
+      "args": ["stop"],
+      "problemMatcher": []
+    },
+    {
+      "label": "UNO Q: status",
+      "type": "process",
+      "command": "${workspaceFolder}/scripts/unoq.sh",
+      "args": ["status"],
+      "problemMatcher": []
     }
   ]
 }

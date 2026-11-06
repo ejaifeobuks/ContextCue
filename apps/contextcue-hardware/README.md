@@ -96,6 +96,47 @@ and deliberately update the profile and corresponding Config.h build label,
 then recompile and repeat the board checks. The board's installed OS/core pairing
 has not been inspected from this workspace.
 
+## Deploy and run from VS Code over SSH
+
+[`scripts/unoq.sh`](../../scripts/unoq.sh) does what App Lab's Run button does,
+using the board's own `arduino-app-cli` over SSH. It copies this folder to
+`~/ArduinoApps/contextcue-hardware` on the board (listed in App Lab as
+`user:contextcue-hardware`), replacing only `app.yaml`, `README.md`, `python/`
+and `sketch/`, so App Lab's reserved `.cache/` and `data/` are kept.
+
+One-time setup on the development machine: an SSH key installed on the board
+(`ssh-copy-id arduino@<board-ip>`) and a host alias in `~/.ssh/config`:
+
+```text
+Host unoq
+  HostName <board-ip>
+  User arduino
+  IdentityFile ~/.ssh/id_ed25519
+  IdentityAgent ~/.ssh/agent.sock
+```
+
+If the key has a passphrase, unlock it once per session (it prompts for the
+passphrase):
+
+```bash
+scripts/unoq.sh agent
+```
+
+This starts an agent on `~/.ssh/agent.sock` if none is running. After a reboot
+or WSL restart the socket file outlives its agent and `ssh-agent -a` refuses
+the existing path; the script removes such a stale socket first. The other
+commands do the same automatically and then say whether the key still needs
+unlocking.
+
+Then use the VS Code tasks **UNO Q: deploy and run**, **UNO Q: logs (save to
+logs/)**, **UNO Q: stop** and **UNO Q: status**, or `scripts/unoq.sh
+run|deploy|logs|stop|status|agent`. Logs are saved under `logs/` (git-ignored).
+
+Do not add `Serial`/`Monitor` printing to the sketch for debugging. On the
+UNO Q it is a Bridge RPC; with no monitor attached, every print makes a
+blocking `mon/connected` call with no timeout from `loop()`, which can stall
+the loop and every `cc_*` RPC with it.
+
 ## Run manually on the UNO Q Linux side
 
 If deploying outside App Lab, first load the sketch, copy the project to the board
