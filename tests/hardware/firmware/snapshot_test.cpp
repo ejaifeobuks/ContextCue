@@ -98,6 +98,7 @@ int main() {
   acquire("distance_disconnect");
   distanceReachable = true;
   testDistanceMillimeters = 425;
+  acquire("distance_reconnect");  // begin() runs; warm-up poll reads nothing
   acquire("distance_recovery");
 
   // Defense in depth: even an inconsistent published record stays valid JSON.
@@ -132,4 +133,5 @@ int main() {
   done = true;
   reader.join();
   emit("after_wrap", readState());
+  std::cout << "distance_begin_calls\t{\"count\":" << distanceBeginCalls << "}\n";
 }

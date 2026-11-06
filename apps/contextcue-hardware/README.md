@@ -60,7 +60,12 @@ Distance acquisition at 10 Hz. The sensor controller keeps independent Thermo,
 Light, and Distance reading state. Distance uses the pinned Modulino
 `begin()`, `available()`, and `get()` API and reports millimeters; a scheduled
 poll without a fresh measurement is reported as `distance_timeout` rather than
-reusing an older value.
+reusing an older value. In Arduino_Modulino 0.10.0, `ModulinoDistance::begin()`
+allocates new driver objects on every call and restarts ranging, so the
+firmware calls it only at boot and after a disconnect. Each poll instead checks
+reachability with an I2C address probe (`0x29`). The first poll after any
+`begin()` is reported as `distance_timeout` because the library would otherwise
+return its previous result before a fresh measurement exists.
 The Light driver uses the pinned Modulino `begin()`, `update()`, and `getAL()`
 API and stores verified ambient values as lux. Linux exposes separate compact
 RPC responses for Thermo, Light, and Distance. A valid zero remains zero. A

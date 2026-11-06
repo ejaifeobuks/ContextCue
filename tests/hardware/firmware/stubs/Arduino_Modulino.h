@@ -3,16 +3,24 @@
 #include <cstdint>
 #include <functional>
 
-inline int Wire1 = 1;
 inline bool thermoReachable = true;
 inline float testTemperature = 25.75f;
 inline float testHumidity = 65.52f;
 inline bool distanceReachable = true;
 inline bool distanceHasNewSample = true;
 inline int testDistanceMillimeters = 430;
+inline int distanceBeginCalls = 0;
 inline std::function<void(const char*)> duringAcquisition;
 
-struct TestModulino { void begin(int) {} };
+// Qwiic bus: only the Distance address probe is modeled.
+struct TestWire {
+  int address = -1;
+  void beginTransmission(int value) { address = value; }
+  int endTransmission() { return address == 0x29 && !distanceReachable ? 2 : 0; }
+};
+inline TestWire Wire1;
+
+struct TestModulino { void begin(TestWire&) {} };
 inline TestModulino Modulino;
 
 struct ModulinoThermo {
@@ -37,7 +45,10 @@ struct ModulinoLight {
 };
 
 struct ModulinoDistance {
-  bool begin() { return distanceReachable; }
+  bool begin() {
+    ++distanceBeginCalls;
+    return distanceReachable;
+  }
   bool available() { return distanceHasNewSample; }
   int get() { return testDistanceMillimeters; }
 };

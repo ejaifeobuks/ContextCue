@@ -79,7 +79,13 @@ class FirmwareSnapshotTests(unittest.TestCase):
     def test_distance_success_timeout_range_and_recovery(self):
         initial = self.records["initial_distance"]
         self.assertEqual((initial["q"], initial["err"]), ("unavailable", "not_sampled"))
-        for label in ("success", "recovery"):
+        # The first poll after begin() reads nothing: the library would return
+        # its previous (or zeroed) result before a fresh measurement exists.
+        for label in ("success", "distance_reconnect"):
+            warmup = self.records[f"{label}_distance_after"]
+            self.assertEqual((warmup["q"], warmup["err"]), ("unavailable", "distance_timeout"))
+            self.assertIsNone(warmup["mm"])
+        for label in ("recovery", "final_recovery"):
             sample = self.records[f"{label}_distance_after"]
             self.assertEqual(sample["q"], "valid")
             self.assertTrue(sample["available"])
@@ -100,6 +106,12 @@ class FirmwareSnapshotTests(unittest.TestCase):
         )
         recovered = self.records["distance_recovery_distance_after"]
         self.assertEqual((recovered["q"], recovered["mm"]), ("valid", 425))
+
+    def test_distance_begin_runs_only_at_boot_and_reconnect(self):
+        # begin() leaks driver objects in Arduino_Modulino 0.10.0, so a present
+        # sensor must never be re-initialized: once at boot, once on re-plug,
+        # regardless of timeouts, out-of-range results or 1000+ stress polls.
+        self.assertEqual(self.records["distance_begin_calls"]["count"], 2)
 
     def test_sensor_rpc_responses_are_compact_and_independent(self):
         light = self.records["initial_light"]
@@ -137,9 +149,9 @@ class FirmwareSnapshotTests(unittest.TestCase):
         initial = self.records["initial_open"]
         self.assertEqual((initial["light"], initial["distance"]), (False, False))
         # By then a completed Distance reading has been published.
-        later = self.records["recovery_open_begin"]
+        later = self.records["final_recovery_open_begin"]
         self.assertEqual((later["light"], later["distance"]), (False, True))
-        self.assertEqual(initial["fw"], "0.1.3")
+        self.assertEqual(initial["fw"], "0.1.4")
 
     def test_concurrent_publication_preserves_sequence_content_and_uptime(self):
         self.assertGreaterEqual(len(self.stress), 1000)

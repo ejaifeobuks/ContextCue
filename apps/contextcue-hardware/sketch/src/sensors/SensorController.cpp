@@ -5,12 +5,24 @@
 #include "../Config.h"
 
 namespace contextcue {
+namespace {
+
+// Address-only I2C probe on the Qwiic bus; the same check
+// ModulinoDistance::begin() starts with, without its allocation/reset.
+bool distanceResponds() {
+  Wire1.beginTransmission(kDistanceI2cAddress);
+  return Wire1.endTransmission() == 0;
+}
+
+}  // namespace
 
 void SensorController::begin() {
   Modulino.begin(Wire1);
   thermoInitialized_ = thermo_.begin();
   lightInitialized_ = light_.begin();
   distanceInitialized_ = distance_.begin();
+  distanceSeenOnce_ = distanceInitialized_;
+  distanceWarmingUp_ = distanceInitialized_;
   thermoReading_.available = thermoInitialized_;
   thermoReading_.quality = "unavailable";
   thermoReading_.error = thermoInitialized_ ? "not_sampled" : "thermo_not_found";
@@ -122,10 +134,9 @@ void SensorController::readDistanceIfDue(uint64_t now) {
   distanceReading_.observedUptimeMs = now;
   distanceReading_.millimeters = NAN;
 
-  // Unlike Thermo/Light, Distance's begin() restarts the VL53L4CD ranging
-  // state machine. Calling it every poll would reset an in-progress
-  // measurement before it can ever report data ready, so only call it once
-  // at init and again after a confirmed disconnect.
+  // Unlike Thermo/Light, Distance's begin() allocates new driver objects
+  // (never freed) and restarts the ToF ranging cycle. Call it only while the
+  // sensor is not initialized: at boot or after a confirmed disconnect.
   if (!distanceInitialized_) {
     distanceInitialized_ = distance_.begin();
     if (!distanceInitialized_) {
@@ -136,25 +147,28 @@ void SensorController::readDistanceIfDue(uint64_t now) {
       return;
     }
     distanceSeenOnce_ = true;
-    distanceConsecutiveTimeouts_ = 0;
+    distanceWarmingUp_ = true;
+  } else if (!distanceResponds()) {
+    // available() keeps returning the last result when the bus read fails,
+    // so a bare address probe is the only reliable disconnect signal. It
+    // neither allocates nor disturbs an in-progress measurement.
+    reportDistanceFailure("unavailable", "distance_disconnected", true);
+    return;
   }
-  if (!distance_.available()) {
-    // A lone miss just means the current ranging cycle isn't done yet.
-    // Only a prolonged silence gets treated as a reachability problem,
-    // since re-probing with begin() on every miss would reset a healthy
-    // in-progress cycle the same way polling it every loop once did.
-    if (++distanceConsecutiveTimeouts_ >= kDistanceMaxConsecutiveTimeouts) {
-      distanceConsecutiveTimeouts_ = 0;
-      distanceInitialized_ = distance_.begin();
-      if (!distanceInitialized_) {
-        reportDistanceFailure("unavailable", "distance_disconnected", true);
-        return;
-      }
-    }
+  if (distanceWarmingUp_) {
+    // begin() does not clear the library's last stored result, so the first
+    // available() after it can return a pre-disconnect value (or a zeroed
+    // "valid" 0 mm at boot). Skip one poll: ranging runs every 20 ms, so the
+    // next poll (100 ms later) always replaces that result with a fresh one.
+    distanceWarmingUp_ = false;
     reportDistanceFailure("unavailable", "distance_timeout");
     return;
   }
-  distanceConsecutiveTimeouts_ = 0;
+  if (!distance_.available()) {
+    // Present but no in-range result: report it without re-initializing.
+    reportDistanceFailure("unavailable", "distance_timeout");
+    return;
+  }
 
   const int millimeters = distance_.get();
   if (!validateDistanceReading(millimeters)) {
