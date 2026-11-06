@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <string>
 
+// Host equivalents for the Arduino core types the sketch uses.
 class String : public std::string {
  public:
   using std::string::string;
@@ -11,9 +12,4 @@ class String : public std::string {
   }
 };
 
-struct TestBridge {
-  void begin() {}
-  template<typename F> void provide_safe(const char*, F) {}
-};
-inline TestBridge Bridge;
 inline void delay(unsigned long) {}

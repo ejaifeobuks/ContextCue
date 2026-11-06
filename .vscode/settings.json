@@ -1,5 +1,5 @@
 {
-  "python.analysis.extraPaths": ["${workspaceFolder}/apps/contextcue_hardware/python"],
+  "python.analysis.extraPaths": ["${workspaceFolder}/apps/contextcue-hardware/python"],
   "python.testing.unittestEnabled": true,
   "python.testing.pytestEnabled": false,
   "python.testing.unittestArgs": ["-s", "tests", "-v"]

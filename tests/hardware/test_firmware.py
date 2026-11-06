@@ -15,12 +15,15 @@ class FirmwareSnapshotTests(unittest.TestCase):
         if compiler is None:
             raise unittest.SkipTest("g++ is required for firmware regression tests")
         fixtures = Path(__file__).parent / "firmware"
+        sketch = Path(__file__).resolve().parents[2] / "apps/contextcue-hardware/sketch"
+        # Arduino compiles every .cpp under the sketch's src/ folder; mirror that.
+        sources = sorted(str(path) for path in (sketch / "src").rglob("*.cpp"))
         with tempfile.TemporaryDirectory(prefix="contextcue-firmware-") as directory:
             binary = Path(directory) / "snapshot_test"
             subprocess.run(
                 [compiler, "-std=c++17", "-pthread", "-Wall", "-Wextra", "-Werror",
                  "-I", str(fixtures / "stubs"), str(fixtures / "snapshot_test.cpp"),
-                 "-o", str(binary)],
+                 *sources, "-o", str(binary)],
                 check=True, capture_output=True, text=True, timeout=60,
             )
             result = subprocess.run(

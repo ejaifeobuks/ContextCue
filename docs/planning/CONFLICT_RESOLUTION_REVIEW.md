@@ -416,7 +416,7 @@ they are decided.
 
 ## Reference documents
 
-- [Software baseline](background_Files/ContextCue_Software_Baseline_v1.md)
-- [UML class reference](background_Files/ContextCue_UML_Class_Reference.md)
-- [Prototype build, demo and user experience plan](background_Files/ContextCue_Prototype_Build_Demo_and_User_Experience_Plan.docx)
+- [Software baseline](../requirements/ContextCue_Software_Baseline_v1.md)
+- [UML class reference](../architecture/ContextCue_UML_Class_Reference.md)
+- [Prototype build, demo and user experience plan](../background/ContextCue_Prototype_Build_Demo_and_User_Experience_Plan.docx)
 - [Implementation plan](IMPLEMENTATION_PLAN.md)

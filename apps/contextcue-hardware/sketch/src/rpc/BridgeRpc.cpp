@@ -1,48 +1,25 @@
-// ContextCue first hardware milestone: Thermo -> Bridge -> Linux gateway.
-// Sensor access stays in loop(); RPC callbacks read a protected published copy.
+#include "BridgeRpc.h"
+
 #include <Arduino_RouterBridge.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
-#include <zephyr/kernel.h>
 
-#include "Config.h"
-#include "SensorController.h"
+#include "../Config.h"
+#include "../Uptime.h"
+#include "../state/PublishedState.h"
 
-contextcue::SensorController sensors;
-
-struct PublishedState {
-  contextcue::ThermoReading thermo;
-  contextcue::LightReading light;
-  contextcue::DistanceReading distance;
-  const char* driver = "none";
-  char bootId[33] = "";
-};
-
-K_MUTEX_DEFINE(stateMutex);
-PublishedState publishedState;
-
-// Zephyr's 64-bit kernel uptime is safe to read from either thread.
-uint64_t uptimeMs() {
-  return static_cast<uint64_t>(k_uptime_get());
-}
-
-// Only loop/setup touches SensorController. Never hold this lock across I2C.
-void publishState() {
-  k_mutex_lock(&stateMutex, K_FOREVER);
-  publishedState.thermo = sensors.reading();
-  publishedState.light = sensors.lightReading();
-  publishedState.distance = sensors.distanceReading();
-  publishedState.driver = sensors.libraryName();
-  k_mutex_unlock(&stateMutex);
-}
+namespace contextcue {
+namespace {
 
 String checkedJson(const char* buffer, int length) {
-  if (length < 0 || static_cast<size_t>(length) > contextcue::kMaxJsonBytes) {
+  if (length < 0 || static_cast<size_t>(length) > kMaxJsonBytes) {
     return String("{\"v\":\"1.0\",\"err\":\"response_overflow\"}");
   }
   return String(buffer);
 }
+
+}  // namespace
 
 String openSession(String candidate) {
   if (candidate.length() != 32) {
@@ -54,31 +31,21 @@ String openSession(String candidate) {
       return String("{\"v\":\"1.0\",\"err\":\"invalid_boot_token\"}");
     }
   }
-  // A Linux-generated UUID names this firmware boot. It is assigned once and
-  // retained across gateway reconnects; MCU restart clears it. It is an epoch
-  // identity, not authentication and not a persisted user preference.
-  k_mutex_lock(&stateMutex, K_FOREVER);
-  if (publishedState.bootId[0] == '\0') {
-    candidate.toCharArray(publishedState.bootId, sizeof(publishedState.bootId));
-  }
-  const PublishedState state = publishedState;
-  k_mutex_unlock(&stateMutex);
-  char buffer[contextcue::kMaxJsonBytes + 1];
+  const PublishedState state = adoptBootIdAndSnapshot(candidate.c_str());
+  char buffer[kMaxJsonBytes + 1];
   const int n = snprintf(
       buffer, sizeof(buffer),
       "{\"v\":\"%s\",\"fw\":\"%s\",\"boot\":\"%s\",\"ok\":%s,"
       "\"driver\":\"%s\",\"core\":\"%s\",\"bridge\":\"%s\",\"modulino\":\"%s\",\"hs\":\"%s\",\"sht\":\"%s\"}",
-      contextcue::kSchemaVersion, contextcue::kFirmwareVersion, state.bootId,
+      kSchemaVersion, kFirmwareVersion, state.bootId,
       state.thermo.available ? "true" : "false", state.driver,
-      contextcue::kCoreVersion, contextcue::kBridgeVersion,
-      contextcue::kModulinoVersion, contextcue::kHsVersion, contextcue::kShtVersion);
+      kCoreVersion, kBridgeVersion,
+      kModulinoVersion, kHsVersion, kShtVersion);
   return checkedJson(buffer, n);
 }
 
 String readState() {
-  k_mutex_lock(&stateMutex, K_FOREVER);
-  const PublishedState state = publishedState;
-  k_mutex_unlock(&stateMutex);
+  const PublishedState state = snapshotState();
   // Read time after the snapshot so its observation cannot be in the future.
   const uint64_t now = uptimeMs();
   const auto& sample = state.thermo;
@@ -101,12 +68,12 @@ String readState() {
     reason = "thermo_read_failed";
   }
   if (reason != nullptr) snprintf(error, sizeof(error), "\"%s\"", reason);
-  char buffer[contextcue::kMaxJsonBytes + 1];
+  char buffer[kMaxJsonBytes + 1];
   const int n = snprintf(
       buffer, sizeof(buffer),
       "{\"v\":\"%s\",\"boot\":\"%s\",\"seq\":%llu,\"up\":%llu,\"at\":%llu,"
       "\"q\":\"%s\",\"t\":%s,\"h\":%s,\"d\":\"%s\",\"err\":%s}",
-      contextcue::kSchemaVersion, state.bootId,
+      kSchemaVersion, state.bootId,
       static_cast<unsigned long long>(sample.sequence),
       static_cast<unsigned long long>(now),
       static_cast<unsigned long long>(sample.observedUptimeMs),
@@ -115,9 +82,7 @@ String readState() {
 }
 
 String readLightState() {
-  k_mutex_lock(&stateMutex, K_FOREVER);
-  const PublishedState state = publishedState;
-  k_mutex_unlock(&stateMutex);
+  const PublishedState state = snapshotState();
   const auto& sample = state.light;
   const char* quality = sample.quality;
   const char* reason = sample.error;
@@ -136,12 +101,12 @@ String readLightState() {
     reason = "light_read_failed";
   }
   if (reason != nullptr) snprintf(error, sizeof(error), "\"%s\"", reason);
-  char buffer[contextcue::kMaxJsonBytes + 1];
+  char buffer[kMaxJsonBytes + 1];
   const int n = snprintf(
       buffer, sizeof(buffer),
       "{\"v\":\"%s\",\"boot\":\"%s\",\"seq\":%llu,\"up\":%llu,\"at\":%llu,"
       "\"q\":\"%s\",\"lux\":%s,\"err\":%s}",
-      contextcue::kSchemaVersion, state.bootId,
+      kSchemaVersion, state.bootId,
       static_cast<unsigned long long>(sample.sequence),
       static_cast<unsigned long long>(uptimeMs()),
       static_cast<unsigned long long>(sample.observedUptimeMs),
@@ -150,9 +115,7 @@ String readLightState() {
 }
 
 String readDistanceState() {
-  k_mutex_lock(&stateMutex, K_FOREVER);
-  const PublishedState state = publishedState;
-  k_mutex_unlock(&stateMutex);
+  const PublishedState state = snapshotState();
   const auto& sample = state.distance;
   const char* quality = sample.quality;
   const char* reason = sample.error;
@@ -171,12 +134,12 @@ String readDistanceState() {
     reason = "distance_read_failed";
   }
   if (reason != nullptr) snprintf(error, sizeof(error), "\"%s\"", reason);
-  char buffer[contextcue::kMaxJsonBytes + 1];
+  char buffer[kMaxJsonBytes + 1];
   const int n = snprintf(
       buffer, sizeof(buffer),
       "{\"v\":\"%s\",\"boot\":\"%s\",\"seq\":%llu,\"up\":%llu,\"at\":%llu,"
       "\"q\":\"%s\",\"mm\":%s,\"err\":%s}",
-      contextcue::kSchemaVersion, state.bootId,
+      kSchemaVersion, state.bootId,
       static_cast<unsigned long long>(sample.sequence),
       static_cast<unsigned long long>(uptimeMs()),
       static_cast<unsigned long long>(sample.observedUptimeMs),
@@ -184,10 +147,7 @@ String readDistanceState() {
   return checkedJson(buffer, n);
 }
 
-void setup() {
-  sensors.begin();
-  sensors.readTemperatureHumidity(uptimeMs());
-  publishState();
+void beginBridgeRpc() {
   Bridge.begin();
   Bridge.provide_safe("cc_open", openSession);
   Bridge.provide_safe("cc_read", readState);
@@ -195,13 +155,4 @@ void setup() {
   Bridge.provide_safe("cc_read_distance", readDistanceState);
 }
 
-void loop() {
-  const uint64_t now = uptimeMs();
-  sensors.readThermoIfDue(now);
-  publishState();
-  sensors.readLightIfDue(now);
-  sensors.readDistanceIfDue(now);
-  // Keep callbacks safe even if the pinned RPC worker dispatches them early.
-  // No Bridge.call(), nested RPC or serial printing from RPC callbacks.
-  delay(1);
-}
+}  // namespace contextcue

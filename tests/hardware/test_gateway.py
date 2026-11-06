@@ -7,10 +7,10 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "apps/contextcue_hardware/python"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "apps/contextcue-hardware/python"))
 
-from contextcue.contracts import ProtocolError, Quality
-from contextcue.gateway import HardwareGateway
+from contextcue_contracts import Quality
+from contextcue_hardware.gateway import HardwareGateway, ProtocolError
 
 BOOT = "a" * 32
 

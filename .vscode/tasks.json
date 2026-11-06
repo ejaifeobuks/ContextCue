@@ -13,7 +13,7 @@
       "label": "ContextCue: compile UNO Q firmware",
       "type": "process",
       "command": "arduino-cli",
-      "args": ["compile", "--profile", "unoq", "${workspaceFolder}/apps/contextcue_hardware/sketch"],
+      "args": ["compile", "--profile", "unoq", "${workspaceFolder}/apps/contextcue-hardware/sketch"],
       "group": "build",
       "problemMatcher": ["$gcc"]
     }

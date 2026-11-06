@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from .contracts import (
+from contextcue_contracts import (
     BRIDGE_UNAVAILABLE_MS,
     DISTANCE_STALE_MS,
     LIGHT_STALE_MS,
@@ -17,11 +17,15 @@ from .contracts import (
     GatewayState,
     HardwareCapabilities,
     HealthState,
-    ProtocolError,
     Quality,
     SensorSample,
 )
+
 from .transport import ArduinoBridgeTransport, BridgeTransport
+
+
+class ProtocolError(ValueError):
+    """The peer's response cannot be safely used as hardware evidence."""
 
 
 class Clock:

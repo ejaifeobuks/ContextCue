@@ -4,8 +4,13 @@
 #include <limits>
 #include <thread>
 
-// Exercise the actual callbacks, publication, controller and serializer.
-#include "../../apps/contextcue_hardware/sketch/sketch.ino"
+#include <zephyr/kernel.h>
+
+// Exercise the actual callbacks, publication, controller and serializer. The
+// sketch's src/*.cpp files are compiled alongside this file by test_firmware.py.
+#include "../../../apps/contextcue-hardware/sketch/sketch.ino"
+
+using namespace contextcue;
 
 const String bootToken("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 const String otherToken("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");

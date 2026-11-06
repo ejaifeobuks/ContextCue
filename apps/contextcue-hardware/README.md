@@ -19,13 +19,33 @@ state on Linux. It implements the first SensorController/HardwareGateway slice.
   there for reproducible compilation; the sketch calls only the Modulino API.
   `Config.h` reports these build pins, not runtime measurements of the board's OS.
 
+## Code layout
+
+| Path | Contents |
+|---|---|
+| `sketch/sketch.ino` | `setup()`/`loop()` only |
+| `sketch/src/sensors/` | `SensorReadings.h` records; `SensorController.h` interface and `.cpp` implementation |
+| `sketch/src/state/` | Mutex-protected `PublishedState` snapshot and boot identity |
+| `sketch/src/rpc/` | `cc_open`/`cc_read*` Bridge handlers and JSON serialization |
+| `sketch/src/Config.h`, `Uptime.*` | Firmware constants and the Zephyr uptime clock |
+| `python/contextcue_hardware/` | `HardwareGateway`, Bridge transport and console CLI |
+| `python/contextcue_contracts/` | Application-facing contracts and freshness limits (baseline §5) |
+
+The folder follows the [App Lab app specification](https://github.com/arduino/arduino-app-cli/blob/main/docs/app-specification.md)
+and is self-contained, like the official
+[app-bricks-examples](https://github.com/arduino/app-bricks-examples). `sketch/src/`
+is permitted by the Arduino sketch specification and is compiled recursively.
+
 ## Load with Arduino App Lab
 
 1. Connect the UNO Q to App Lab and create a new app named **ContextCue Hardware**.
-2. Open that app's folder. Copy the contents of this `contextcue_hardware` folder
-   into it, preserving the entire `python/contextcue` package and both sketch
-   headers. The resulting app root must directly contain `app.yaml`, `python/`
-   and `sketch/`. Copying just `main.py` and `sketch.ino` is insufficient.
+2. Open that app's folder. Copy the contents of this `apps/contextcue-hardware`
+   folder into it, preserving both Python packages
+   (`python/contextcue_hardware` and `python/contextcue_contracts`) and the
+   whole `sketch/src/` tree. The resulting app root must directly contain
+   `app.yaml`, `python/` and `sketch/`. Copying just `main.py` and
+   `sketch.ino` is insufficient. Do not add `data/` or `.cache/` folders here;
+   App Lab reserves those names.
 3. Run the app. App Lab builds/uploads the MCU sketch, installs the Python
    dependency and launches `python/main.py` on the UNO Q's Linux processor.
 4. Open the **Main / Python** console. It prints JSON Lines with two sensor
@@ -53,7 +73,7 @@ Install the official Arduino CLI. From the repository root:
 
 ```bash
 arduino-cli core update-index
-arduino-cli compile --profile unoq apps/contextcue_hardware/sketch
+arduino-cli compile --profile unoq apps/contextcue-hardware/sketch
 ```
 
 The profile downloads the exact board and library dependencies into Arduino CLI's
@@ -86,7 +106,7 @@ contextcue-hardware
 Alternatively, after installing `python/requirements.txt` in a board environment:
 
 ```bash
-python3 apps/contextcue_hardware/python/main.py --once
+python3 apps/contextcue-hardware/python/main.py --once
 ```
 
 `--once` exits 0 only when both the Bridge and Thermo are ready. `--capabilities`
@@ -209,7 +229,7 @@ Buzzer, display/touch, Bluetooth, output leases, control-event retention,
 ContextEngine, persistence, notices, model generation and the UI are subsequent
 implementation work. There are no output commands or audio actions in this app.
 The gateway does not yet satisfy the baseline's complete INT-01/INT-02 or HW-01
-through HW-07 requirements. Test-only peers are confined to `tests/`.
+through HW-07 requirements. Test-only peers are confined to `tests/hardware/`.
 
 ## API references
 

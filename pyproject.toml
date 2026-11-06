@@ -13,12 +13,12 @@ dependencies = []
 board = ["arduino-router-bridge==0.5.1"]
 
 [project.scripts]
-contextcue-hardware = "contextcue.cli:main"
+contextcue-hardware = "contextcue_hardware.cli:main"
 
 [tool.setuptools.packages.find]
-where = ["apps/contextcue_hardware/python"]
-include = ["contextcue*"]
+where = ["apps/contextcue-hardware/python"]
+include = ["contextcue_hardware*", "contextcue_contracts*"]
 
 [tool.pytest.ini_options]
-pythonpath = ["apps/contextcue_hardware/python"]
+pythonpath = ["apps/contextcue-hardware/python"]
 testpaths = ["tests"]

@@ -96,12 +96,12 @@ MCU firmware
   OutputController
 ```
 
-![ContextCue class diagram](background_Files/ContextCue_Class_Diagram.png)
+![ContextCue class diagram](docs/architecture/ContextCue_Class_Diagram.png)
 
 The editable architecture source is
-[`designDiagram.mmd`](designDiagram.mmd). The detailed responsibilities are
+[`docs/architecture/ContextCue_Class_Diagram.mmd`](docs/architecture/ContextCue_Class_Diagram.mmd). The detailed responsibilities are
 documented in
-[`background_Files/ContextCue_UML_Class_Reference.md`](background_Files/ContextCue_UML_Class_Reference.md).
+[`docs/architecture/ContextCue_UML_Class_Reference.md`](docs/architecture/ContextCue_UML_Class_Reference.md).
 
 ### Main planned components
 
@@ -236,20 +236,44 @@ on real-time hardware acquisition and bounded output commands.
 
 ## Repository map
 
+Folders follow Arduino App Lab conventions: every folder under `apps/` is a
+complete, self-contained App Lab app (named in kebab-case after its
+`app.yaml` name, like Arduino's official examples), so you can copy it
+straight into App Lab. `services/` holds the planned components that have no
+code yet. When a second app needs the contracts, they become a
+pip-installable package listed in each app's `requirements.txt` (the same way
+Arduino ships its bricks).
+
+```text
+apps/
+  contextcue-hardware/   App Lab app: HardwareGateway (Linux) + SensorController (MCU)
+    app.yaml  python/  sketch/
+services/                planned components, not yet implemented
+  application/           ContextEngine, NotificationService, DataRepository
+  ai/                    RecommendationService / LLM worker
+  ui/                    UserInterface
+  peripherals/           PeripheralAdapter: display, touch, Bluetooth
+  simulator/             Simulator and labeled fixtures
+tests/hardware/          Gateway and firmware regression tests for contextcue-hardware
+docs/                    Architecture, requirements, background, planning
+```
+
 | Location | Responsibility |
 |---|---|
-| [`apps/contextcue_hardware/sketch/SensorController.h`](apps/contextcue_hardware/sketch/SensorController.h) | Thermo acquisition and validation on the MCU |
-| [`apps/contextcue_hardware/sketch/sketch.ino`](apps/contextcue_hardware/sketch/sketch.ino) | Firmware startup, boot identity, and Bridge RPC handlers |
-| [`apps/contextcue_hardware/sketch/Config.h`](apps/contextcue_hardware/sketch/Config.h) | Firmware, library, timing, and response-size constants |
-| [`apps/contextcue_hardware/sketch/sketch.yaml`](apps/contextcue_hardware/sketch/sketch.yaml) | Pinned UNO Q core and Arduino libraries |
-| [`apps/contextcue_hardware/python/contextcue/contracts.py`](apps/contextcue_hardware/python/contextcue/contracts.py) | Application-facing sensor, capability, and health contracts |
-| [`apps/contextcue_hardware/python/contextcue/transport.py`](apps/contextcue_hardware/python/contextcue/transport.py) | Arduino Router Bridge connection |
-| [`apps/contextcue_hardware/python/contextcue/gateway.py`](apps/contextcue_hardware/python/contextcue/gateway.py) | Async hardware gateway, decoding, time mapping, and recovery |
-| [`apps/contextcue_hardware/python/contextcue/cli.py`](apps/contextcue_hardware/python/contextcue/cli.py) | Console startup, polling, JSON output, and shutdown |
-| [`apps/contextcue_hardware/python/main.py`](apps/contextcue_hardware/python/main.py) | Arduino App Lab Python entry point |
-| [`tests/test_gateway.py`](tests/test_gateway.py) | Gateway contract and fault tests using a test-only RPC peer |
-| [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) | Phased plan for the remaining modules |
-| [`background_Files/`](background_Files/) | Requirements, architecture, and project reference documents |
+| [`apps/contextcue-hardware/sketch/sketch.ino`](apps/contextcue-hardware/sketch/sketch.ino) | Firmware `setup()`/`loop()` |
+| [`apps/contextcue-hardware/sketch/src/sensors/`](apps/contextcue-hardware/sketch/src/sensors/) | `SensorController` acquisition and validation for Thermo, Light, and Distance |
+| [`apps/contextcue-hardware/sketch/src/state/`](apps/contextcue-hardware/sketch/src/state/) | Mutex-protected published readings and boot identity |
+| [`apps/contextcue-hardware/sketch/src/rpc/`](apps/contextcue-hardware/sketch/src/rpc/) | Bridge RPC handlers and compact JSON serialization |
+| [`apps/contextcue-hardware/sketch/src/Config.h`](apps/contextcue-hardware/sketch/src/Config.h) | Firmware, library, timing, and response-size constants |
+| [`apps/contextcue-hardware/sketch/sketch.yaml`](apps/contextcue-hardware/sketch/sketch.yaml) | Pinned UNO Q core and Arduino libraries |
+| [`apps/contextcue-hardware/python/contextcue_hardware/gateway.py`](apps/contextcue-hardware/python/contextcue_hardware/gateway.py) | Async hardware gateway, decoding, time mapping, and recovery |
+| [`apps/contextcue-hardware/python/contextcue_hardware/transport.py`](apps/contextcue-hardware/python/contextcue_hardware/transport.py) | Arduino Router Bridge connection |
+| [`apps/contextcue-hardware/python/contextcue_hardware/cli.py`](apps/contextcue-hardware/python/contextcue_hardware/cli.py) | Console startup, polling, JSON output, and shutdown |
+| [`apps/contextcue-hardware/python/main.py`](apps/contextcue-hardware/python/main.py) | Arduino App Lab Python entry point |
+| [`apps/contextcue-hardware/python/contextcue_contracts/`](apps/contextcue-hardware/python/contextcue_contracts/) | Application-facing sensor, capability, health, and freshness contracts |
+| [`tests/hardware/`](tests/hardware/) | Gateway contract/fault tests and host-compiled firmware tests |
+| [`docs/planning/IMPLEMENTATION_PLAN.md`](docs/planning/IMPLEMENTATION_PLAN.md) | Phased plan for the remaining modules |
+| [`docs/`](docs/) | Requirements, architecture, and project reference documents |
 
 ## Safety and data rules
 
@@ -277,7 +301,7 @@ standard library:
 
 ```bash
 python3 -m unittest discover -s tests -v
-python3 apps/contextcue_hardware/python/main.py --help
+python3 apps/contextcue-hardware/python/main.py --help
 ```
 
 VS Code's **Run Task** menu includes:
@@ -302,7 +326,7 @@ the UNO Q Linux side. On an ordinary laptop it reports unavailable hardware;
 there is no automatic simulator or fabricated sensor fallback.
 
 For board setup and recovery details, read the
-[hardware bring-up guide](apps/contextcue_hardware/README.md).
+[hardware bring-up guide](apps/contextcue-hardware/README.md).
 
 ## Implementation roadmap
 
@@ -321,14 +345,16 @@ The recommended order is:
 11. Add the UI, model worker, simulation, and full acceptance tests.
 
 The detailed work breakdown is in
-[`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md).
+[`docs/planning/IMPLEMENTATION_PLAN.md`](docs/planning/IMPLEMENTATION_PLAN.md).
 
 ## Reference documents
 
-- [`background_Files/ContextCue_Software_Baseline_v1.md`](background_Files/ContextCue_Software_Baseline_v1.md) — product requirements, policies, interfaces, failure behavior, and acceptance gates.
-- [`background_Files/ContextCue_UML_Class_Reference.md`](background_Files/ContextCue_UML_Class_Reference.md) — responsibilities and operations for the planned classes.
-- [`background_Files/ContextCue_Class_Diagram.png`](background_Files/ContextCue_Class_Diagram.png) — rendered system architecture.
-- [`background_Files/ContextCue_Problem_Solution_and_Simulation_Strategy.docx`](background_Files/ContextCue_Problem_Solution_and_Simulation_Strategy.docx) — problem, solution, and simulation background.
+- [`docs/requirements/ContextCue_Software_Baseline_v1.md`](docs/requirements/ContextCue_Software_Baseline_v1.md) — product requirements, policies, interfaces, failure behavior, and acceptance gates.
+- [`docs/architecture/ContextCue_UML_Class_Reference.md`](docs/architecture/ContextCue_UML_Class_Reference.md) — responsibilities and operations for the planned classes.
+- [`docs/architecture/ContextCue_Class_Diagram.png`](docs/architecture/ContextCue_Class_Diagram.png) — rendered system architecture.
+- [`docs/background/ContextCue_Problem_Solution_and_Simulation_Strategy.docx`](docs/background/ContextCue_Problem_Solution_and_Simulation_Strategy.docx) — problem, solution, and simulation background.
+- [`docs/background/ContextCue_Prototype_Build_Demo_and_User_Experience_Plan.docx`](docs/background/ContextCue_Prototype_Build_Demo_and_User_Experience_Plan.docx) — prototype build, demo, and user experience plan.
+- [`docs/planning/CONFLICT_RESOLUTION_REVIEW.md`](docs/planning/CONFLICT_RESOLUTION_REVIEW.md) — resolved differences between source documents.
 
 ## Scope note
 

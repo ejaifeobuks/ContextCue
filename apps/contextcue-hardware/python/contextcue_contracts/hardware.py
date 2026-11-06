@@ -1,25 +1,9 @@
-"""Application-facing hardware contracts, independent of Arduino imports."""
+"""HW-to-SWE contracts (baseline section 5), independent of Arduino imports."""
 
 from dataclasses import asdict, dataclass
-from enum import Enum
 from typing import Any
 
-SCHEMA_VERSION = "1.0"
-THERMO_STALE_MS = 5_000
-LIGHT_STALE_MS = 2_000
-DISTANCE_STALE_MS = 2_000
-BRIDGE_UNAVAILABLE_MS = 3_000
-
-
-class Quality(str, Enum):
-    VALID = "valid"
-    STALE = "stale"
-    UNAVAILABLE = "unavailable"
-    INVALID = "invalid"
-
-
-class ProtocolError(ValueError):
-    """The peer's response cannot be safely used as hardware evidence."""
+from .common import Quality
 
 
 @dataclass(frozen=True)

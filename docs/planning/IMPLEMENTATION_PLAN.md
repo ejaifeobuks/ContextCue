@@ -19,9 +19,9 @@ MCU modules
 ```
 
 The existing Thermo implementation is in
-`apps/contextcue_hardware/sketch/SensorController.h`. The firmware entry point
-is `apps/contextcue_hardware/sketch/sketch.ino`, and the Linux gateway is
-`apps/contextcue_hardware/python/contextcue/gateway.py`.
+`apps/contextcue-hardware/sketch/src/sensors/SensorController.cpp`. The firmware entry point
+is `apps/contextcue-hardware/sketch/sketch.ino`, and the Linux gateway is
+`apps/contextcue-hardware/python/contextcue_hardware/gateway.py`.
 
 ## Final plan review status
 
@@ -168,7 +168,7 @@ module_id = "distance", metric = "distance"
 ### 0.2 Reuse the common sensor contract
 
 All sensor readings should use the existing `SensorSample` structure in
-`apps/contextcue_hardware/python/contextcue/contracts.py`.
+`apps/contextcue-hardware/python/contextcue_contracts/`.
 
 Each reading should retain:
 
@@ -861,7 +861,7 @@ Use fake Bridge responses to test:
 - Malformed responses
 - Independent module failures
 
-Extend `tests/test_gateway.py` or add focused test modules as the gateway
+Extend `tests/hardware/test_gateway.py` or add focused test modules as the gateway
 surface grows.
 
 Also test the output, policy, and adapter contracts without hardware:
