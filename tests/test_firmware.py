@@ -73,6 +73,45 @@ class FirmwareSnapshotTests(unittest.TestCase):
         for label in ("recovery", "final_recovery"):
             self.assertEqual(self.records[f"{label}_after"]["q"], "valid")
 
+    def test_distance_success_timeout_range_and_recovery(self):
+        initial = self.records["initial_distance"]
+        self.assertEqual((initial["q"], initial["err"]), ("unavailable", "not_sampled"))
+        for label in ("success", "recovery"):
+            sample = self.records[f"{label}_distance_after"]
+            self.assertEqual(sample["q"], "valid")
+            self.assertTrue(sample["available"])
+            self.assertGreaterEqual(sample["mm"], 0)
+        timeout = self.records["distance_timeout_distance_after"]
+        self.assertEqual((timeout["q"], timeout["err"]), ("unavailable", "distance_timeout"))
+        self.assertIsNone(timeout["mm"])
+        out_of_range = self.records["distance_out_of_range_distance_after"]
+        self.assertEqual(
+            (out_of_range["q"], out_of_range["err"]),
+            ("invalid", "distance_out_of_range"),
+        )
+        self.assertIsNone(out_of_range["mm"])
+        disconnected = self.records["distance_disconnect_distance_after"]
+        self.assertEqual(
+            (disconnected["q"], disconnected["err"]),
+            ("unavailable", "distance_disconnected"),
+        )
+        recovered = self.records["distance_recovery_distance_after"]
+        self.assertEqual((recovered["q"], recovered["mm"]), ("valid", 425))
+
+    def test_sensor_rpc_responses_are_compact_and_independent(self):
+        light = self.records["initial_light"]
+        distance = self.records["distance_after"]
+        self.assertEqual((light["q"], light["lux"], light["err"]),
+                         ("unavailable", None, "light_not_found"))
+        self.assertEqual((distance["q"], distance["mm"], distance["err"]),
+                         ("valid", 430, None))
+        for sample in (light, distance):
+            self.assertEqual(sample["boot"], self.records["initial"]["boot"])
+            self.assertLessEqual(len(json.dumps(sample, separators=(",", ":")).encode()),
+                                 224)
+        self.assertEqual(self.records["light_after"]["q"], "unavailable")
+        self.assertEqual(distance["q"], "valid")
+
     def test_serializer_rejects_nan_and_infinity_for_both_metrics(self):
         guards = [v for k, v in self.records.items() if k.startswith("guard_")]
         self.assertEqual(len(guards), 6)
@@ -83,7 +122,7 @@ class FirmwareSnapshotTests(unittest.TestCase):
             self.assertIsNone(sample["h"])
 
     def test_concurrent_handshakes_retain_one_boot_identity(self):
-        tokens = {v["boot"] for v in self.records.values()}
+        tokens = {v["boot"] for v in self.records.values() if "boot" in v}
         self.assertEqual(len(tokens), 1)
         self.assertIn(tokens.pop(), {"a" * 32, "b" * 32})
         self.assertEqual(self.records["initial_open"]["ok"], True)

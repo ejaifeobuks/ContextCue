@@ -10,11 +10,11 @@ application, policy, model worker, persistence, user interface, and hardware
 gateway. Its microcontroller side will read the Modulino devices and enforce
 safe hardware limits.
 
-> **Current status:** this repository contains the first hardware milestone,
+> **Current status:** this repository contains the hardware sensing milestones,
 > not the complete ContextCue product. The implemented path includes real
-> Modulino Thermo and MCU-side Light acquisition; the Arduino Bridge, Python
-> gateway, and JSON console still expose the Thermo-only protocol. The remaining
-> application and hardware modules are planned or partially implemented.
+> Modulino Thermo, Light, and Distance acquisition with independent Bridge RPCs,
+> Python decoding, freshness, and health. The remaining application and
+> hardware modules are planned or partially implemented.
 
 ## What ContextCue is meant to do
 
@@ -162,11 +162,12 @@ The current Python gateway:
 - Runs blocking Bridge calls in worker threads.
 - Never substitutes simulated or fabricated sensor values at runtime.
 
-Only Thermo is currently configured and advertised through the Linux gateway.
-Light acquisition is implemented on the MCU but is not yet exposed in the
-Bridge protocol. Distance, Pixels, Buzzer, display/touch, Bluetooth, model
-generation, persistence, notification policy, and the full UI remain future
-work.
+Thermo, Light, and Distance are configured and independently advertised
+through the Linux gateway. Each module has separate decoding, freshness,
+sequence/uptime validation, and health state; a failed module does not hide
+valid readings from the others. Pixels, Buzzer, display/touch, Bluetooth,
+model generation, persistence, notification policy, and the full UI remain
+future work.
 
 ## Calendar and weather sources
 

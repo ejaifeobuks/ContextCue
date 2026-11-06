@@ -33,12 +33,28 @@ def reading(**changes):
     return result
 
 
+def light_reading(**changes):
+    result = {"v": "1.0", "boot": BOOT, "seq": 1, "up": 1100, "at": 1000,
+              "q": "unavailable", "lux": None, "err": "light_not_found"}
+    result.update(changes)
+    return result
+
+
+def distance_reading(**changes):
+    result = {"v": "1.0", "boot": BOOT, "seq": 1, "up": 1100, "at": 1000,
+              "q": "valid", "mm": 430, "err": None}
+    result.update(changes)
+    return result
+
+
 class TestPeer:
     def __init__(self):
         self.info = {"v": "1.0", "boot": BOOT, "fw": "0.1.0", "ok": True,
                      "driver": "modulino", "core": "1.0.0", "bridge": "0.4.4", "modulino": "0.10.0",
                      "hs": "1.0.1", "sht": "0.5.3"}
         self.data = reading()
+        self.light_data = light_reading()
+        self.distance_data = distance_reading()
         self.calls = []
         self.failure = None
         self.closed = False
@@ -51,7 +67,14 @@ class TestPeer:
         self.calls.append((method, args, timeout))
         if self.failure:
             raise self.failure
-        result = self.info if method == "cc_open" else self.data
+        result = {
+            "cc_open": self.info,
+            "cc_read": self.data,
+            "cc_read_light": self.light_data,
+            "cc_read_distance": self.distance_data,
+        }.get(method)
+        if result is None:
+            raise AssertionError(f"Unexpected RPC method: {method}")
         return json.dumps(result, separators=(",", ":")) if isinstance(result, dict) else result
 
     def close(self):
@@ -69,27 +92,37 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_real_samples_preserve_identity_and_observation_age(self):
         state = await self.gateway.read_state()
-        temperature, humidity = state.samples
+        temperature, humidity = tuple(s for s in state.samples if s.module_id == "thermo")
         self.assertEqual(temperature.value, 24.25)
         self.assertEqual(humidity.unit, "%RH")
         self.assertEqual(temperature.source_mode, "real")
         self.assertEqual(temperature.observed_at, "2026-10-27T00:01:39.900Z")
         self.assertEqual(temperature.event_id, f"{BOOT}:1:temperature")
-        self.assertTrue(all(h.state == "ready" for h in state.health))
+        self.assertEqual(
+            {h.component_id: h.state for h in state.health},
+            {"bridge": "ready", "thermo": "ready",
+             "light": "unavailable", "distance": "ready"},
+        )
+        capabilities = await self.gateway.get_capabilities()
+        self.assertEqual(capabilities.available_modules, ("thermo", "distance"))
 
     async def test_zero_is_a_valid_measurement(self):
         self.peer.data = reading(t=0, h=0)
         state = await self.gateway.read_state()
-        self.assertTrue(all(s.value == 0 and s.quality == Quality.VALID for s in state.samples))
+        thermo = tuple(s for s in state.samples if s.module_id == "thermo")
+        self.assertTrue(all(s.value == 0 and s.quality == Quality.VALID for s in thermo))
 
     async def test_repeated_poll_does_not_refresh_old_observation(self):
         first = await self.gateway.read_state()
         self.clock.now += 6
         self.peer.data["up"] += 6000
         repeated = await self.gateway.read_state()
-        self.assertEqual(first.samples[0].observed_at, repeated.samples[0].observed_at)
-        self.assertEqual(first.samples[0].received_at, repeated.samples[0].received_at)
-        self.assertTrue(all(s.quality == Quality.STALE for s in repeated.samples))
+        first_thermo = tuple(s for s in first.samples if s.module_id == "thermo")
+        repeated_thermo = tuple(s for s in repeated.samples if s.module_id == "thermo")
+        self.assertEqual(first_thermo[0].observed_at, repeated_thermo[0].observed_at)
+        self.assertEqual(first_thermo[0].received_at, repeated_thermo[0].received_at)
+        thermo = tuple(s for s in repeated.samples if s.module_id == "thermo")
+        self.assertTrue(all(s.quality == Quality.STALE for s in thermo))
         self.assertEqual(repeated.health[0].state, "ready")
         self.assertEqual(repeated.health[1].state, "unavailable")
 
@@ -98,13 +131,14 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.clock.now += 6
         self.peer.data = reading(seq=2, up=7100, at=7000)
         state = await self.gateway.read_state()
-        self.assertEqual(state.samples[0].quality, Quality.VALID)
-        self.assertEqual(state.samples[0].seq, 2)
+        thermo = tuple(s for s in state.samples if s.module_id == "thermo")
+        self.assertEqual(thermo[0].quality, Quality.VALID)
+        self.assertEqual(thermo[0].seq, 2)
 
     async def test_sensor_disconnect_keeps_bridge_healthy(self):
         self.peer.data = reading(q="unavailable", t=None, h=None, err="thermo_disconnected")
         state = await self.gateway.read_state()
-        self.assertIsNone(state.samples[0].value)
+        self.assertIsNone(next(s for s in state.samples if s.module_id == "thermo").value)
         self.assertEqual(state.health[0].state, "ready")
         self.assertEqual(state.health[1].reason, "thermo_disconnected")
 
@@ -113,10 +147,13 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.peer.failure = TimeoutError("RPC deadline")
         state = await self.gateway.read_state()
         self.assertTrue(all(s.value is None and s.quality == Quality.UNAVAILABLE for s in state.samples))
-        self.assertEqual(state.health[0].state, "unavailable")
+        self.assertEqual(state.health[1].state, "unavailable")
         self.peer.failure = None
         recovered = await self.gateway.read_state()
-        self.assertEqual(recovered.samples[0].value, 24.25)
+        self.assertEqual(
+            next(s for s in recovered.samples if s.module_id == "thermo").value,
+            24.25,
+        )
         self.assertEqual(recovered.health[0].state, "ready")
 
     async def test_reboot_discards_old_boot_and_sequence(self):
@@ -124,6 +161,8 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         new_boot = "b" * 32
         self.peer.info["boot"] = new_boot
         self.peer.data = reading(boot=new_boot, seq=1, up=100, at=50)
+        self.peer.light_data = light_reading(boot=new_boot)
+        self.peer.distance_data = distance_reading(boot=new_boot)
         state = await self.gateway.read_state()
         self.assertEqual(state.boot_id, new_boot)
         self.assertTrue(all(s.boot_id == new_boot for s in state.samples))
@@ -144,6 +183,8 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         first = await self.gateway.read_state()
         self.peer.info["boot"] = ""
         self.peer.data = reading(boot="", seq=1, up=100, at=50)
+        self.peer.light_data = light_reading(boot="")
+        self.peer.distance_data = distance_reading(boot="")
         second = await self.gateway.read_state()
         self.assertNotEqual(first.boot_id, second.boot_id)
         self.assertEqual(second.health[0].state, "ready")
@@ -151,7 +192,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
     async def test_health_expires_without_further_polling(self):
         await self.gateway.read_state()
         self.clock.now += 3
-        bridge, sensor = self.gateway.get_device_health()
+        bridge, sensor, _, _ = self.gateway.get_device_health()
         self.assertEqual(bridge.state, "unavailable")
         self.assertEqual(sensor.state, "unavailable")
 
@@ -169,7 +210,10 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
 
         self.peer.call = transient_call
         state = await self.gateway.read_state()
-        self.assertEqual(state.samples[0].value, 24.25)
+        self.assertEqual(
+            next(s for s in state.samples if s.module_id == "thermo").value,
+            24.25,
+        )
         self.assertEqual(state.health[0].state, "ready")
 
     async def test_incompatible_version_is_not_accepted(self):
@@ -185,7 +229,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(payload=payload[:10]):
                 self.peer.data = payload
                 state = await self.gateway.read_state()
-                self.assertEqual(state.health[0].state, "unavailable")
+                self.assertEqual(state.health[1].state, "unavailable")
 
     async def test_invalid_sensor_fields_do_not_become_facts(self):
         for changes in ({"t": True}, {"t": float("nan")}, {"h": 101},
@@ -194,32 +238,37 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(changes=changes):
                 self.peer.data = reading(**changes)
                 state = await self.gateway.read_state()
-                self.assertTrue(all(s.quality != Quality.VALID for s in state.samples))
-                self.assertEqual(state.health[0].state, "unavailable")
+                self.assertTrue(
+                    all(s.quality != Quality.VALID
+                        for s in state.samples if s.module_id == "thermo")
+                )
+                self.assertEqual(state.health[1].state, "unavailable")
 
     async def test_failed_sample_must_have_null_values(self):
         self.peer.data = reading(q="invalid", err="read_failed")
         state = await self.gateway.read_state()
-        self.assertEqual(state.health[0].state, "unavailable")
+        self.assertEqual(state.health[1].state, "unavailable")
 
     async def test_sequence_and_uptime_regressions_are_rejected(self):
         await self.gateway.read_state()
         self.peer.data = reading(seq=0)
         state = await self.gateway.read_state()
-        self.assertEqual(state.health[0].state, "unavailable")
+        self.assertEqual(state.health[1].state, "unavailable")
         self.peer.data = reading(seq=2, up=500, at=400)
         state = await self.gateway.read_state()
-        self.assertEqual(state.health[0].state, "unavailable")
+        self.assertEqual(state.health[1].state, "unavailable")
 
     async def test_sample_cannot_change_under_same_sequence(self):
         await self.gateway.read_state()
         self.peer.data["t"] = 30
         state = await self.gateway.read_state()
-        self.assertEqual(state.health[0].state, "unavailable")
+        self.assertEqual(state.health[1].state, "unavailable")
 
     async def test_capabilities_only_advertise_implemented_features(self):
         capabilities = await self.gateway.get_capabilities()
-        self.assertEqual(capabilities.configured_modules, ("thermo",))
+        self.assertEqual(
+            capabilities.configured_modules, ("thermo", "light", "distance")
+        )
         self.assertEqual(capabilities.output_patterns, ())
         self.assertFalse(capabilities.native_brightness)
         self.assertIsNone(capabilities.audio_adapter_version)

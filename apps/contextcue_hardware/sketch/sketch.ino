@@ -13,6 +13,8 @@ contextcue::SensorController sensors;
 
 struct PublishedState {
   contextcue::ThermoReading thermo;
+  contextcue::LightReading light;
+  contextcue::DistanceReading distance;
   const char* driver = "none";
   char bootId[33] = "";
 };
@@ -29,6 +31,8 @@ uint64_t uptimeMs() {
 void publishState() {
   k_mutex_lock(&stateMutex, K_FOREVER);
   publishedState.thermo = sensors.reading();
+  publishedState.light = sensors.lightReading();
+  publishedState.distance = sensors.distanceReading();
   publishedState.driver = sensors.libraryName();
   k_mutex_unlock(&stateMutex);
 }
@@ -110,6 +114,76 @@ String readState() {
   return checkedJson(buffer, n);
 }
 
+String readLightState() {
+  k_mutex_lock(&stateMutex, K_FOREVER);
+  const PublishedState state = publishedState;
+  k_mutex_unlock(&stateMutex);
+  const auto& sample = state.light;
+  const char* quality = sample.quality;
+  const char* reason = sample.error;
+  char value[20] = "null";
+  char error[64] = "null";
+  if (strcmp(quality, "valid") == 0) {
+    if (reason == nullptr && sample.available &&
+        isfinite(sample.ambientLightLux)) {
+      snprintf(value, sizeof(value), "%.2f", sample.ambientLightLux);
+    } else {
+      quality = "invalid";
+      if (reason == nullptr) reason = "light_read_failed";
+    }
+  } else if (reason == nullptr) {
+    quality = "invalid";
+    reason = "light_read_failed";
+  }
+  if (reason != nullptr) snprintf(error, sizeof(error), "\"%s\"", reason);
+  char buffer[contextcue::kMaxJsonBytes + 1];
+  const int n = snprintf(
+      buffer, sizeof(buffer),
+      "{\"v\":\"%s\",\"boot\":\"%s\",\"seq\":%llu,\"up\":%llu,\"at\":%llu,"
+      "\"q\":\"%s\",\"lux\":%s,\"err\":%s}",
+      contextcue::kSchemaVersion, state.bootId,
+      static_cast<unsigned long long>(sample.sequence),
+      static_cast<unsigned long long>(uptimeMs()),
+      static_cast<unsigned long long>(sample.observedUptimeMs),
+      quality, value, error);
+  return checkedJson(buffer, n);
+}
+
+String readDistanceState() {
+  k_mutex_lock(&stateMutex, K_FOREVER);
+  const PublishedState state = publishedState;
+  k_mutex_unlock(&stateMutex);
+  const auto& sample = state.distance;
+  const char* quality = sample.quality;
+  const char* reason = sample.error;
+  char value[20] = "null";
+  char error[64] = "null";
+  if (strcmp(quality, "valid") == 0) {
+    if (reason == nullptr && sample.available &&
+        isfinite(sample.millimeters)) {
+      snprintf(value, sizeof(value), "%.0f", sample.millimeters);
+    } else {
+      quality = "invalid";
+      if (reason == nullptr) reason = "distance_read_failed";
+    }
+  } else if (reason == nullptr) {
+    quality = "invalid";
+    reason = "distance_read_failed";
+  }
+  if (reason != nullptr) snprintf(error, sizeof(error), "\"%s\"", reason);
+  char buffer[contextcue::kMaxJsonBytes + 1];
+  const int n = snprintf(
+      buffer, sizeof(buffer),
+      "{\"v\":\"%s\",\"boot\":\"%s\",\"seq\":%llu,\"up\":%llu,\"at\":%llu,"
+      "\"q\":\"%s\",\"mm\":%s,\"err\":%s}",
+      contextcue::kSchemaVersion, state.bootId,
+      static_cast<unsigned long long>(sample.sequence),
+      static_cast<unsigned long long>(uptimeMs()),
+      static_cast<unsigned long long>(sample.observedUptimeMs),
+      quality, value, error);
+  return checkedJson(buffer, n);
+}
+
 void setup() {
   sensors.begin();
   sensors.readTemperatureHumidity(uptimeMs());
@@ -117,6 +191,8 @@ void setup() {
   Bridge.begin();
   Bridge.provide_safe("cc_open", openSession);
   Bridge.provide_safe("cc_read", readState);
+  Bridge.provide_safe("cc_read_light", readLightState);
+  Bridge.provide_safe("cc_read_distance", readDistanceState);
 }
 
 void loop() {
@@ -124,6 +200,7 @@ void loop() {
   sensors.readThermoIfDue(now);
   publishState();
   sensors.readLightIfDue(now);
+  sensors.readDistanceIfDue(now);
   // Keep callbacks safe even if the pinned RPC worker dispatches them early.
   // No Bridge.call(), nested RPC or serial printing from RPC callbacks.
   delay(1);

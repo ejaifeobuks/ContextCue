@@ -7,6 +7,9 @@ inline int Wire1 = 1;
 inline bool thermoReachable = true;
 inline float testTemperature = 25.75f;
 inline float testHumidity = 65.52f;
+inline bool distanceReachable = true;
+inline bool distanceHasNewSample = true;
+inline int testDistanceMillimeters = 430;
 inline std::function<void(const char*)> duringAcquisition;
 
 struct TestModulino { void begin(int) {} };
@@ -31,4 +34,10 @@ struct ModulinoLight {
   bool begin() { return false; }
   bool update() { return false; }
   int getAL() { return 0; }
+};
+
+struct ModulinoDistance {
+  bool begin() { return distanceReachable; }
+  bool available() { return distanceHasNewSample; }
+  int get() { return testDistanceMillimeters; }
 };

@@ -32,15 +32,17 @@ state on Linux. It implements the first SensorController/HardwareGateway slice.
    samples: `temperature` in `degC` and `humidity` in `%RH`, plus separate Bridge
    and Thermo health. Values depend on the actual hardware.
 
-The MCU attempts Thermo acquisition at 1 Hz and Light acquisition at 5 Hz. The
-sensor controller keeps independent Thermo, Light, and Distance reading state;
-Distance remains reserved for its 10 Hz schedule but is not implemented yet.
+The MCU attempts Thermo acquisition at 1 Hz, Light acquisition at 5 Hz, and
+Distance acquisition at 10 Hz. The sensor controller keeps independent Thermo,
+Light, and Distance reading state. Distance uses the pinned Modulino
+`begin()`, `available()`, and `get()` API and reports millimeters; a scheduled
+poll without a fresh measurement is reported as `distance_timeout` rather than
+reusing an older value.
 The Light driver uses the pinned Modulino `begin()`, `update()`, and `getAL()`
-API and stores verified ambient values as lux. Linux still exposes the
-Thermo-only wire response until the multi-module protocol phase. A valid zero
-remains zero. A failed initialization, non-finite reading, or out-of-range
-reading has null values and a reason. A connected Bridge can coexist with a
-failed sensor.
+API and stores verified ambient values as lux. Linux exposes separate compact
+RPC responses for Thermo, Light, and Distance. A valid zero remains zero. A
+failed initialization, non-finite reading, or out-of-range reading has null
+values and a reason. A connected Bridge can coexist with a failed sensor.
 
 The app can start without Thermo: expect `thermo_not_found`, null values and
 unavailable sensor health. It retries discovery on the next acquisition interval.
@@ -99,13 +101,17 @@ open `/dev/ttyHS1` or `Serial1` directly; the Arduino Router owns the MCU link.
 
 The application-facing objects use schema `1.0` from the software baseline.
 Bridge transfers compact JSON strings, at most 224 bytes each, to leave room for
-MessagePack framing within the MCU transport limit. These ContextCue RPC names
-are implemented by this sketch, not built-in Arduino functions:
+MessagePack framing within the MCU transport limit. The sensor RPCs are kept
+separate so each module retains independent sequence, timing, quality, and
+error state. These ContextCue RPC names are implemented by this sketch, not
+built-in Arduino functions:
 
 | RPC | Arguments | Response |
 |---|---|---|
 | `cc_open` | Proposed 32-character lowercase hexadecimal boot token | Schema, assigned boot ID, firmware/build versions, library identity and availability |
 | `cc_read` | None | Schema, boot ID, sequence, current/observation uptime, validity, temperature, humidity, library identity and error |
+| `cc_read_light` | None | Schema, boot ID, sequence, current/observation uptime, validity, lux, and error |
+| `cc_read_distance` | None | Schema, boot ID, sequence, current/observation uptime, validity, millimeters, and error |
 
 The compact read keys map as follows:
 
@@ -195,9 +201,10 @@ concurrent publication across the 32-bit uptime boundary.
 
 ## Scope of this milestone
 
-Thermo is configured/advertised through the current gateway protocol. Light is
-acquired and validated on the MCU but is not yet advertised because the
-multi-module Bridge response belongs to the next protocol phase. Distance, Pixels,
+Thermo, Light, and Distance are configured and independently advertised through
+the current gateway protocol. The gateway polls each module separately and
+preserves valid modules when another module is unavailable, malformed, stale,
+or disconnected. Pixels,
 Buzzer, display/touch, Bluetooth, output leases, control-event retention,
 ContextEngine, persistence, notices, model generation and the UI are subsequent
 implementation work. There are no output commands or audio actions in this app.

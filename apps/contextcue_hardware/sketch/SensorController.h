@@ -33,7 +33,7 @@ struct DistanceReading {
   float millimeters = NAN;
   bool available = false;
   const char* quality = "unavailable";
-  const char* error = "not_implemented";
+  const char* error = "distance_not_found";
 };
 
 // Hardware acquisition only. Comfort policy and calendar time belong on Linux.
@@ -44,12 +44,17 @@ class SensorController {
     Modulino.begin(Wire1);
     thermoInitialized_ = thermo_.begin();
     lightInitialized_ = light_.begin();
+    distanceInitialized_ = distance_.begin();
     thermoReading_.available = thermoInitialized_;
     thermoReading_.quality = "unavailable";
     thermoReading_.error = thermoInitialized_ ? "not_sampled" : "thermo_not_found";
     lightReading_.available = false;
     lightReading_.quality = "unavailable";
     lightReading_.error = lightInitialized_ ? "not_sampled" : "light_not_found";
+    distanceReading_.available = false;
+    distanceReading_.quality = "unavailable";
+    distanceReading_.error =
+        distanceInitialized_ ? "not_sampled" : "distance_not_found";
   }
 
   void readThermoIfDue(uint64_t now) {
@@ -138,6 +143,41 @@ class SensorController {
     return true;
   }
 
+  void readDistanceIfDue(uint64_t now) {
+    if (distanceAttempted_ &&
+        now - lastDistanceAttempt_ < kDistanceIntervalMs) {
+      return;
+    }
+    distanceAttempted_ = true;
+    lastDistanceAttempt_ = now;
+    distanceReading_.sequence++;
+    distanceReading_.observedUptimeMs = now;
+    distanceReading_.millimeters = NAN;
+
+    const bool wasReady = distanceInitialized_;
+    distanceInitialized_ = distance_.begin();
+    if (!distanceInitialized_) {
+      reportDistanceFailure(
+          "unavailable",
+          wasReady ? "distance_disconnected" : "distance_not_found", true);
+      return;
+    }
+    if (!distance_.available()) {
+      reportDistanceFailure("unavailable", "distance_timeout");
+      return;
+    }
+
+    const int millimeters = distance_.get();
+    if (!validateDistanceReading(millimeters)) {
+      reportDistanceFailure("invalid", "distance_out_of_range");
+      return;
+    }
+    distanceReading_.millimeters = static_cast<float>(millimeters);
+    distanceReading_.available = true;
+    distanceReading_.quality = "valid";
+    distanceReading_.error = nullptr;
+  }
+
   const ThermoReading& reading() const { return thermoReading_; }
   const ThermoReading& thermoReading() const { return thermoReading_; }
   const LightReading& lightReading() const { return lightReading_; }
@@ -164,6 +204,10 @@ class SensorController {
     return normalized < 0 ? 0 : (normalized > 1 ? 1 : normalized);
   }
 
+  bool validateDistanceReading(int millimeters) const {
+    return millimeters >= 0 && millimeters <= kDistanceMaximumMm;
+  }
+
   void reportSensorFailure(const char* quality, const char* error) {
     thermoReading_.quality = quality;
     thermoReading_.error = error;
@@ -182,11 +226,22 @@ class SensorController {
     lightInitialized_ = false;
   }
 
+  void reportDistanceFailure(const char* quality, const char* error,
+                             bool disconnected = false) {
+    distanceReading_.quality = quality;
+    distanceReading_.error = error;
+    distanceReading_.millimeters = NAN;
+    distanceReading_.available = false;
+    distanceInitialized_ = !disconnected;
+  }
+
  private:
   ModulinoThermo thermo_;
   ModulinoLight light_;
+  ModulinoDistance distance_;
   bool thermoInitialized_ = false;
   bool lightInitialized_ = false;
+  bool distanceInitialized_ = false;
   bool lightCalibrationValid_ = false;
   float darkReference_ = NAN;
   float brightReference_ = NAN;
@@ -197,6 +252,8 @@ class SensorController {
   uint64_t lastAttempt_ = 0;
   bool lightAttempted_ = false;
   uint64_t lastLightAttempt_ = 0;
+  bool distanceAttempted_ = false;
+  uint64_t lastDistanceAttempt_ = 0;
 };
 
 }  // namespace contextcue

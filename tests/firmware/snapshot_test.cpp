@@ -14,6 +14,26 @@ void emit(const std::string& label, const String& payload) {
   std::cout << label << '\t' << payload << '\n';
 }
 
+void emitDistance(const std::string& label) {
+  const auto& reading = sensors.distanceReading();
+  std::cout << label << "\t{\"seq\":" << reading.sequence
+            << ",\"at\":" << reading.observedUptimeMs
+            << ",\"mm\":";
+  if (std::isfinite(reading.millimeters)) {
+    std::cout << reading.millimeters;
+  } else {
+    std::cout << "null";
+  }
+  std::cout << ",\"available\":" << (reading.available ? "true" : "false")
+            << ",\"q\":\"" << reading.quality << "\",\"err\":";
+  if (reading.error == nullptr) {
+    std::cout << "null";
+  } else {
+    std::cout << "\"" << reading.error << "\"";
+  }
+  std::cout << "}\n";
+}
+
 void acquire(const std::string& label) {
   duringAcquisition = [&](const char* phase) {
     // Model the pinned RPC worker running during each blocking sensor call.
@@ -28,6 +48,7 @@ void acquire(const std::string& label) {
   loop();
   duringAcquisition = {};
   emit(label + "_after", readState());
+  emitDistance(label + "_distance_after");
 }
 
 int main() {
@@ -42,6 +63,9 @@ int main() {
 
   setup();
   emit("initial", readState());
+  emit("initial_light", readLightState());
+  emit("initial_distance_state", readDistanceState());
+  emitDistance("initial_distance");
   emit("initial_open", openSession(bootToken));
   testTemperature = 26.5f;
   testHumidity = 50.0f;
@@ -57,6 +81,19 @@ int main() {
   acquire("out_of_range");
   testTemperature = 24.0f;
   acquire("final_recovery");
+  emit("light_after", readLightState());
+  emit("distance_after", readDistanceState());
+
+  distanceHasNewSample = false;
+  acquire("distance_timeout");
+  distanceHasNewSample = true;
+  testDistanceMillimeters = 5001;
+  acquire("distance_out_of_range");
+  distanceReachable = false;
+  acquire("distance_disconnect");
+  distanceReachable = true;
+  testDistanceMillimeters = 425;
+  acquire("distance_recovery");
 
   // Defense in depth: even an inconsistent published record stays valid JSON.
   const PublishedState good = publishedState;
