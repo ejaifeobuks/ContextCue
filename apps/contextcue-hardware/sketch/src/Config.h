@@ -5,7 +5,7 @@
 
 namespace contextcue {
 constexpr char kSchemaVersion[] = "1.0";
-constexpr char kFirmwareVersion[] = "0.1.2";
+constexpr char kFirmwareVersion[] = "0.1.3";
 // Keep these in sync with sketch.yaml; the compile check uses that profile.
 constexpr char kCoreVersion[] = "1.0.0";
 constexpr char kBridgeVersion[] = "0.4.4";

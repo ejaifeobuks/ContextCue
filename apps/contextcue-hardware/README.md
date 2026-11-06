@@ -128,7 +128,7 @@ built-in Arduino functions:
 
 | RPC | Arguments | Response |
 |---|---|---|
-| `cc_open` | Proposed 32-character lowercase hexadecimal boot token | Schema, assigned boot ID, firmware/build versions, library identity and availability |
+| `cc_open` | Proposed 32-character lowercase hexadecimal boot token | Schema, assigned boot ID, firmware/build versions, library identity, and Thermo (`ok`), `light`, and `distance` availability |
 | `cc_read` | None | Schema, boot ID, sequence, current/observation uptime, validity, temperature, humidity, library identity and error |
 | `cc_read_light` | None | Schema, boot ID, sequence, current/observation uptime, validity, lux, and error |
 | `cc_read_distance` | None | Schema, boot ID, sequence, current/observation uptime, validity, millimeters, and error |

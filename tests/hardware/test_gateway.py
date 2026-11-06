@@ -273,6 +273,26 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(capabilities.native_brightness)
         self.assertIsNone(capabilities.audio_adapter_version)
         self.assertNotIn("execute", capabilities.supported_operations)
+        self.assertEqual(
+            capabilities.units,
+            {"temperature": "degC", "humidity": "%RH",
+             "ambient_light": "lux", "distance": "mm"},
+        )
+
+    async def test_handshake_advertises_each_reported_module(self):
+        self.peer.info.update({"light": True, "distance": False})
+        capabilities = await self.gateway.get_capabilities()
+        self.assertEqual(capabilities.available_modules, ("thermo", "light"))
+
+    async def test_handshake_without_module_flags_advertises_only_thermo(self):
+        # Firmware before 0.1.3 reports only Thermo availability.
+        capabilities = await self.gateway.get_capabilities()
+        self.assertEqual(capabilities.available_modules, ("thermo",))
+
+    async def test_handshake_rejects_non_boolean_module_flags(self):
+        self.peer.info["distance"] = "yes"
+        with self.assertRaises(ProtocolError):
+            await self.gateway.get_capabilities()
 
     async def test_close_disconnects_and_prevents_more_reads(self):
         await self.gateway.close()

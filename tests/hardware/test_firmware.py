@@ -132,6 +132,15 @@ class FirmwareSnapshotTests(unittest.TestCase):
         self.assertEqual(self.records["disconnect_open_begin"]["ok"], True)
         self.assertEqual(self.records["recovery_open_begin"]["ok"], False)
 
+    def test_handshake_reports_light_and_distance_availability(self):
+        # setup() samples only Thermo; the stub Light module is never found.
+        initial = self.records["initial_open"]
+        self.assertEqual((initial["light"], initial["distance"]), (False, False))
+        # By then a completed Distance reading has been published.
+        later = self.records["recovery_open_begin"]
+        self.assertEqual((later["light"], later["distance"]), (False, True))
+        self.assertEqual(initial["fw"], "0.1.3")
+
     def test_concurrent_publication_preserves_sequence_content_and_uptime(self):
         self.assertGreaterEqual(len(self.stress), 1000)
         fingerprints = {}

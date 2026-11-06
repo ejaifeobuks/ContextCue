@@ -127,6 +127,14 @@ class HardwareGateway:
         driver = _text(info, "driver")
         if driver not in {"none", "modulino"} or type(info.get("ok")) is not bool:
             raise ProtocolError("Invalid Thermo capabilities")
+        # Firmware 0.1.3+ reports Light/Distance availability; older firmware
+        # omits the flags, so those modules are unknown until their first read.
+        reported = {"thermo": info["ok"] and driver != "none"}
+        for module in ("light", "distance"):
+            flag = info.get(module, False)
+            if type(flag) is not bool:
+                raise ProtocolError(f"Invalid {module} capability")
+            reported[module] = flag
         same_boot = self._capabilities is not None and self._capabilities.boot_id == boot
         available_modules = (
             tuple(
@@ -135,7 +143,7 @@ class HardwareGateway:
                 and self._modules[module].health.state == "ready"
             )
             if same_boot else
-            (("thermo",) if info["ok"] and driver != "none" else ())
+            tuple(module for module in ("thermo", "light", "distance") if reported[module])
         )
         capabilities = HardwareCapabilities(
             schema_version=SCHEMA_VERSION,
@@ -144,7 +152,10 @@ class HardwareGateway:
             configured_modules=("thermo", "light", "distance"),
             available_modules=available_modules,
             sensor_driver=driver,
-            units={"temperature": "degC", "humidity": "%RH"},
+            units={
+                "temperature": "degC", "humidity": "%RH",
+                "ambient_light": "lux", "distance": "mm",
+            },
             versions={key: _text(info, key) for key in ("core", "bridge", "modulino", "hs", "sht")},
             supported_operations=(
                 "get_capabilities", "read_state", "get_device_health",

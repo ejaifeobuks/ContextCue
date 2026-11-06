@@ -36,9 +36,11 @@ String openSession(String candidate) {
   const int n = snprintf(
       buffer, sizeof(buffer),
       "{\"v\":\"%s\",\"fw\":\"%s\",\"boot\":\"%s\",\"ok\":%s,"
-      "\"driver\":\"%s\",\"core\":\"%s\",\"bridge\":\"%s\",\"modulino\":\"%s\",\"hs\":\"%s\",\"sht\":\"%s\"}",
+      "\"light\":%s,\"distance\":%s,\"driver\":\"%s\",\"core\":\"%s\",\"bridge\":\"%s\",\"modulino\":\"%s\",\"hs\":\"%s\",\"sht\":\"%s\"}",
       kSchemaVersion, kFirmwareVersion, state.bootId,
-      state.thermo.available ? "true" : "false", state.driver,
+      state.thermo.available ? "true" : "false",
+      state.light.available ? "true" : "false",
+      state.distance.available ? "true" : "false", state.driver,
       kCoreVersion, kBridgeVersion,
       kModulinoVersion, kHsVersion, kShtVersion);
   return checkedJson(buffer, n);
