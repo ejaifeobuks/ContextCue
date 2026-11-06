@@ -129,10 +129,10 @@ documented in
 
 ## Current implementation
 
-The first milestone currently implements:
+The hardware sensing milestones currently implement:
 
 ```text
-Modulino Thermo
+Modulino Thermo, Light, and Distance
   -> UNO Q MCU SensorController
   -> Arduino Router Bridge
   -> Linux HardwareGateway
@@ -141,14 +141,16 @@ Modulino Thermo
 
 The current firmware:
 
-- Reads temperature and humidity from a real Modulino Thermo.
+- Reads temperature and humidity (Thermo, 1 Hz), ambient light (Light, 5 Hz),
+  and time-of-flight distance (Distance, 10 Hz) from real Modulino modules.
 - Uses `Wire1` for the Qwiic bus.
 - Detects the supported Thermo driver through `Arduino_Modulino`.
-- Validates finite values and accepted temperature/humidity ranges.
+- Validates finite values and accepted ranges for every metric.
 - Assigns a sequence number to every acquisition attempt.
 - Records MCU uptime and a boot identity.
 - Reports failed readings as null values with named errors.
-- Serves compact `cc_open` and `cc_read` Bridge RPC responses.
+- Serves compact `cc_open`, `cc_read`, `cc_read_light`, and
+  `cc_read_distance` Bridge RPC responses.
 
 The current Python gateway:
 

@@ -43,8 +43,8 @@ async def _run(args: argparse.Namespace) -> int:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Read the real ContextCue Thermo gateway")
-    parser.add_argument("--once", action="store_true", help="Read once; exit 1 if degraded")
+    parser = argparse.ArgumentParser(description="Read the real ContextCue sensor gateway (Thermo, Light, Distance)")
+    parser.add_argument("--once", action="store_true", help="Read once; exit 1 unless the Bridge and every sensor are ready")
     parser.add_argument("--capabilities", action="store_true", help="Print capabilities and exit")
     parser.add_argument("--interval", type=float, default=0.1, help="Poll period in seconds (>=0.1)")
     parser.add_argument("--router", help="Override APP_SOCKET / the board's Arduino Router socket")

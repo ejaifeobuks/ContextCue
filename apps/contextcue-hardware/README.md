@@ -1,13 +1,15 @@
 # ContextCue hardware bring-up
 
-This application reads a real Modulino Thermo through the UNO Q's Qwiic connector,
-serves the latest reading over Arduino Bridge, and prints typed, labeled sensor
-state on Linux. It implements the first SensorController/HardwareGateway slice.
+This application reads real Modulino Thermo, Light, and Distance modules through
+the UNO Q's Qwiic connector, serves the latest readings over Arduino Bridge, and
+prints typed, labeled sensor state on Linux. It implements the
+SensorController/HardwareGateway sensing slice.
 
 ## Hardware and software
 
 - Arduino UNO Q with a working Linux image and Arduino App Lab connection.
-- Modulino Thermo connected by Qwiic to the UNO Q. Connect the cable with power off.
+- Modulino Thermo, Light, and Distance connected by Qwiic to the UNO Q. Connect
+  cables with power off. Any module may be absent; it is then reported unavailable.
 - Arduino_Modulino 0.10.0 detects the supported HS300x (`0x44`) or SHT31 (`0x45`)
   Thermo variant. The sketch does not select or access those drivers directly.
 - Use `Wire1` for the Qwiic bus. The UNO-style header bus is a different interface.
@@ -48,9 +50,10 @@ is permitted by the Arduino sketch specification and is compiled recursively.
    App Lab reserves those names.
 3. Run the app. App Lab builds/uploads the MCU sketch, installs the Python
    dependency and launches `python/main.py` on the UNO Q's Linux processor.
-4. Open the **Main / Python** console. It prints JSON Lines with two sensor
-   samples: `temperature` in `degC` and `humidity` in `%RH`, plus separate Bridge
-   and Thermo health. Values depend on the actual hardware.
+4. Open the **Main / Python** console. It prints JSON Lines with four sensor
+   samples (`temperature` in `degC`, `humidity` in `%RH`, `ambient_light` in
+   `lux`, `distance` in `mm`), plus separate Bridge, Thermo, Light, and Distance
+   health. Values depend on the actual hardware.
 
 The MCU attempts Thermo acquisition at 1 Hz, Light acquisition at 5 Hz, and
 Distance acquisition at 10 Hz. The sensor controller keeps independent Thermo,
@@ -109,7 +112,8 @@ Alternatively, after installing `python/requirements.txt` in a board environment
 python3 apps/contextcue-hardware/python/main.py --once
 ```
 
-`--once` exits 0 only when both the Bridge and Thermo are ready. `--capabilities`
+`--once` exits 0 only when the Bridge and every sensor (Thermo, Light, and
+Distance) are ready; any missing or failed module makes it exit 1. `--capabilities`
 exits 0 when the capabilities exchange succeeds; inspect `available_modules` to
 check sensor availability. Ctrl+C stops polling and disconnects the Linux client.
 
@@ -171,8 +175,9 @@ clock synchronization guarantee. Monotonic Linux time determines freshness, so
 wall-clock changes cannot refresh a sample. Duplicate polls retain the original
 sample timestamps. MCU uptime uses Zephyr's thread-safe 64-bit kernel clock.
 
-Thermo data expires after five seconds even if the Bridge still answers. Health
-also expires after three seconds without a successful state poll. A failed RPC
+Thermo data expires after five seconds, and Light and Distance data after two
+seconds, even if the Bridge still answers. Health also expires after three
+seconds without a successful state poll. A failed RPC
 immediately makes exposed cached values unavailable. The next poll rediscovers
 the peer; it never substitutes simulated values. Every RPC has a 750 ms deadline
 and executes in a worker thread so it does not block the application's event loop.
