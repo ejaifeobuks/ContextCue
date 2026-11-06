@@ -45,6 +45,8 @@ class SensorController {
   bool thermoInitialized_ = false;
   bool lightInitialized_ = false;
   bool distanceInitialized_ = false;
+  bool distanceSeenOnce_ = false;
+  uint32_t distanceConsecutiveTimeouts_ = 0;
   bool lightCalibrationValid_ = false;
   float darkReference_ = NAN;
   float brightReference_ = NAN;

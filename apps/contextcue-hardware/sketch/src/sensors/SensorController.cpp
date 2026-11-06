@@ -122,18 +122,39 @@ void SensorController::readDistanceIfDue(uint64_t now) {
   distanceReading_.observedUptimeMs = now;
   distanceReading_.millimeters = NAN;
 
-  const bool wasReady = distanceInitialized_;
-  distanceInitialized_ = distance_.begin();
+  // Unlike Thermo/Light, Distance's begin() restarts the VL53L4CD ranging
+  // state machine. Calling it every poll would reset an in-progress
+  // measurement before it can ever report data ready, so only call it once
+  // at init and again after a confirmed disconnect.
   if (!distanceInitialized_) {
-    reportDistanceFailure(
-        "unavailable",
-        wasReady ? "distance_disconnected" : "distance_not_found", true);
-    return;
+    distanceInitialized_ = distance_.begin();
+    if (!distanceInitialized_) {
+      reportDistanceFailure(
+          "unavailable",
+          distanceSeenOnce_ ? "distance_disconnected" : "distance_not_found",
+          true);
+      return;
+    }
+    distanceSeenOnce_ = true;
+    distanceConsecutiveTimeouts_ = 0;
   }
   if (!distance_.available()) {
+    // A lone miss just means the current ranging cycle isn't done yet.
+    // Only a prolonged silence gets treated as a reachability problem,
+    // since re-probing with begin() on every miss would reset a healthy
+    // in-progress cycle the same way polling it every loop once did.
+    if (++distanceConsecutiveTimeouts_ >= kDistanceMaxConsecutiveTimeouts) {
+      distanceConsecutiveTimeouts_ = 0;
+      distanceInitialized_ = distance_.begin();
+      if (!distanceInitialized_) {
+        reportDistanceFailure("unavailable", "distance_disconnected", true);
+        return;
+      }
+    }
     reportDistanceFailure("unavailable", "distance_timeout");
     return;
   }
+  distanceConsecutiveTimeouts_ = 0;
 
   const int millimeters = distance_.get();
   if (!validateDistanceReading(millimeters)) {

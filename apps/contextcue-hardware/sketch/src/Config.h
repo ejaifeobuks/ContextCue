@@ -15,6 +15,10 @@ constexpr char kShtVersion[] = "0.5.3";
 constexpr uint32_t kThermoIntervalMs = 1000;
 constexpr uint32_t kLightIntervalMs = 200;
 constexpr uint32_t kDistanceIntervalMs = 100;
+// A lone available()==false just means the current ranging cycle isn't
+// done; only this many consecutive misses (~1s at kDistanceIntervalMs)
+// are treated as a reachability problem worth re-probing with begin().
+constexpr uint32_t kDistanceMaxConsecutiveTimeouts = 10;
 constexpr float kLightMaximumLux = 1000000.0f;
 constexpr int kDistanceMaximumMm = 4000;
 constexpr size_t kMaxJsonBytes = 224;
