@@ -28,6 +28,12 @@ class ProtocolError(ValueError):
     """The peer's response cannot be safely used as hardware evidence."""
 
 
+# Bridge failure reason prefixes, so logs say which side failed.
+MCU_UNRESPONSIVE = "mcu_unresponsive"      # router answers; the MCU sketch does not
+ROUTER_UNAVAILABLE = "router_unavailable"  # the Linux-side Arduino Router does not answer
+GATEWAY_STOPPED = "gateway_stopped"        # this process was asked to stop (e.g. SIGTERM)
+
+
 class Clock:
     def monotonic(self) -> float:
         return time.monotonic()
@@ -177,16 +183,28 @@ class HardwareGateway:
             try:
                 return await self._discover()
             except Exception as exc:
-                self._mark_failed(exc)
+                self._mark_failed(await self._diagnose(exc))
                 raise
+
+    async def _diagnose(self, exc: Exception) -> str:
+        """Name the failing side: a timeout with a live router means the MCU."""
+        if isinstance(exc, TimeoutError):
+            try:
+                await asyncio.to_thread(self._transport.router_version, self._timeout)
+            except Exception:
+                return f"{ROUTER_UNAVAILABLE}: {exc}"
+            return f"{MCU_UNRESPONSIVE}: {exc}"
+        if isinstance(exc, OSError):  # socket refused/closed, router not running
+            return f"{ROUTER_UNAVAILABLE}: {exc}"
+        return str(exc)
 
     def _ensure_open(self) -> None:
         if self._closed:
             raise RuntimeError("HardwareGateway is closed")
 
-    def _mark_failed(self, exc: Exception) -> None:
+    def _mark_failed(self, reason: str) -> None:
         self._needs_discovery = True
-        self._health = HealthState("bridge", "unavailable", str(exc), self._last_success)
+        self._health = HealthState("bridge", "unavailable", reason, self._last_success)
         # _state() hides cached values while unavailable. Retain the original
         # identity/fingerprint internally so recovery cannot bless changed data
         # under an already-seen sequence or refresh its observation timestamp.
@@ -202,21 +220,40 @@ class HardwareGateway:
                     ("light", "cc_read_light"),
                     ("distance", "cc_read_distance"),
                 )
-                failures = 0
+                errors = []
                 for module_id, method in reads:
-                    if not await self._read_module(module_id, method):
-                        failures += 1
+                    error = await self._read_module(module_id, method)
+                    if error is not None:
+                        errors.append(error)
                 end = self._clock.monotonic()
-                if failures == len(reads):
+                if len(errors) == len(reads):
+                    if all(isinstance(e, TimeoutError) for e in errors):
+                        raise TimeoutError("All sensor RPCs timed out")
                     raise ProtocolError("All sensor RPCs failed")
                 self._last_success = _timestamp(self._clock.utcnow())
                 self._last_success_monotonic = end
                 self._health = HealthState("bridge", "ready", None, self._last_success)
             except Exception as exc:
-                self._mark_failed(exc)
+                self._mark_failed(await self._diagnose(exc))
             return self._state()
 
-    async def _read_module(self, module_id: str, method: str) -> bool:
+    def stopped_state(self, reason: str) -> GatewayState:
+        """Final record for a requested stop, distinct from any hardware failure.
+
+        Values are withheld because the gateway will stop observing them.
+        """
+        state = self._state()
+        reason = f"{GATEWAY_STOPPED}: {reason}"
+        samples = tuple(
+            replace(s, value=None, quality=Quality.UNAVAILABLE, error=GATEWAY_STOPPED)
+            for s in state.samples
+        )
+        health = tuple(
+            replace(h, state="stopped", reason=reason) for h in state.health
+        )
+        return replace(state, samples=samples, health=health)
+
+    async def _read_module(self, module_id: str, method: str) -> Exception | None:
         start = self._clock.monotonic()
         try:
             data = await self._rpc(method)
@@ -232,7 +269,7 @@ class HardwareGateway:
                 end = self._clock.monotonic()
                 received = self._clock.utcnow()
             self._ingest_module(module_id, data, start, end, received)
-            return True
+            return None
         except Exception as exc:
             tracker = self._modules[module_id]
             tracker.health = HealthState(
@@ -240,7 +277,7 @@ class HardwareGateway:
                 tracker.samples[0].received_at if tracker.samples else None,
                 "uno_q_mcu",
             )
-            return False
+            return exc
 
     def _ingest_module(
         self, module_id: str, data: dict, start: float, end: float,

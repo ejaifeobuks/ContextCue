@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import math
+import signal
 import sys
 from dataclasses import asdict
 
@@ -23,10 +24,24 @@ async def _run(args: argparse.Namespace) -> int:
                 return 1
             print(json.dumps(asdict(result), allow_nan=False), flush=True)
             return 0
+        # App Lab / arduino-app-cli stop the app with SIGTERM. Record that as a
+        # requested stop so it is never mistaken for an MCU or router failure.
+        loop = asyncio.get_running_loop()
+        stop = asyncio.Event()
+        stop_signal: list[str] = []
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            def request_stop(sig=sig):
+                stop_signal.append(sig.name)
+                stop.set()
+            loop.add_signal_handler(sig, request_stop)
         last_signature = None
-        while True:
-            started = asyncio.get_running_loop().time()
+        while not stop.is_set():
+            started = loop.time()
             state = await gateway.read_state()
+            if stop.is_set():
+                # A stop tears the MCU side down first, so a poll in flight
+                # when it arrives fails because of the stop; report the stop.
+                break
             # Emit new samples and health changes without printing each 100 ms poll.
             # Heartbeat timestamps advance on every successful poll; they do not
             # constitute a change in the user-visible health state.
@@ -39,7 +54,15 @@ async def _run(args: argparse.Namespace) -> int:
                 last_signature = signature
             if args.once:
                 return 0 if all(h.state == "ready" for h in state.health) else 1
-            await asyncio.sleep(max(0, args.interval - (asyncio.get_running_loop().time() - started)))
+            try:
+                await asyncio.wait_for(
+                    stop.wait(), max(0, args.interval - (loop.time() - started)))
+            except asyncio.TimeoutError:
+                pass
+        print(json.dumps(
+            gateway.stopped_state(f"{stop_signal[0]} received").to_dict(),
+            allow_nan=False), flush=True)
+        return 0
 
 
 def main() -> None:

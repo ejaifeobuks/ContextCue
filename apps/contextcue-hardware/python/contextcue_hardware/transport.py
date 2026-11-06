@@ -9,6 +9,8 @@ class BridgeTransport(Protocol):
 
     def call(self, method: str, *args: object, timeout: float) -> object: ...
 
+    def router_version(self, timeout: float) -> str: ...
+
     def close(self) -> None: ...
 
 
@@ -36,6 +38,11 @@ class ArduinoBridgeTransport:
         if self._client is None:
             raise ConnectionError("Bridge has not been connected")
         return self._client.call(method, *args, timeout=timeout)
+
+    def router_version(self, timeout: float) -> str:
+        # The router answers $/version itself without forwarding to the MCU,
+        # so it separates a dead router from an unresponsive MCU.
+        return str(self.call("$/version", timeout=timeout))
 
     def close(self) -> None:
         if self._client is not None:

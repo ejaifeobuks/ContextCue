@@ -57,7 +57,13 @@ class TestPeer:
         self.distance_data = distance_reading()
         self.calls = []
         self.failure = None
+        self.router_alive = True
         self.closed = False
+
+    def router_version(self, timeout):
+        if not self.router_alive:
+            raise TimeoutError("Request '$/version' timed out")
+        return "0.11.0"
 
     def connect(self, timeout):
         if self.failure:
@@ -155,6 +161,39 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
             24.25,
         )
         self.assertEqual(recovered.health[0].state, "ready")
+
+    async def test_timeout_with_live_router_blames_the_mcu(self):
+        await self.gateway.read_state()
+        self.peer.failure = TimeoutError("Request 'cc_read' timed out after 0.75s")
+        state = await self.gateway.read_state()
+        self.assertEqual(state.health[0].state, "unavailable")
+        self.assertTrue(state.health[0].reason.startswith("mcu_unresponsive: "))
+
+    async def test_timeout_with_dead_router_blames_the_router(self):
+        await self.gateway.read_state()
+        self.peer.failure = TimeoutError("Request 'cc_read' timed out after 0.75s")
+        self.peer.router_alive = False
+        state = await self.gateway.read_state()
+        self.assertTrue(state.health[0].reason.startswith("router_unavailable: "))
+
+    async def test_refused_router_socket_blames_the_router(self):
+        self.peer.failure = ConnectionError("Arduino Router unavailable")
+        state = await self.gateway.read_state()
+        self.assertTrue(state.health[0].reason.startswith("router_unavailable: "))
+
+    async def test_protocol_errors_are_not_attributed_to_a_side(self):
+        self.peer.data = "not json"
+        self.peer.light_data = "not json"
+        self.peer.distance_data = "not json"
+        state = await self.gateway.read_state()
+        self.assertEqual(state.health[0].reason, "All sensor RPCs failed")
+
+    async def test_stopped_state_is_distinct_from_failures(self):
+        await self.gateway.read_state()
+        state = self.gateway.stopped_state("SIGTERM received")
+        self.assertTrue(all(h.state == "stopped" for h in state.health))
+        self.assertTrue(all(h.reason == "gateway_stopped: SIGTERM received" for h in state.health))
+        self.assertTrue(all(s.value is None and s.error == "gateway_stopped" for s in state.samples))
 
     async def test_reboot_discards_old_boot_and_sequence(self):
         await self.gateway.read_state()
@@ -323,6 +362,34 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         release.set()
         state = await pending
         self.assertEqual(state.health[0].state, "ready")
+
+
+class CliStopTests(unittest.TestCase):
+    def test_sigterm_ends_with_a_stopped_record_and_clean_exit(self):
+        import os
+        import signal
+        import subprocess
+
+        app = Path(__file__).resolve().parents[2] / "apps/contextcue-hardware/python"
+        # No Arduino Router here: the gateway keeps polling with failures,
+        # which is exactly when a stop must still be recognizable.
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "contextcue_hardware.cli", "--router", "unix:///nonexistent"],
+            cwd=app, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            env={**os.environ, "PYTHONPATH": str(app)},
+        )
+        try:
+            first = proc.stdout.readline()
+            self.assertTrue(first, "CLI printed nothing before the stop")
+            proc.send_signal(signal.SIGTERM)
+            rest, _ = proc.communicate(timeout=5)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+        self.assertEqual(proc.returncode, 0)
+        last = json.loads(rest.strip().splitlines()[-1])
+        self.assertTrue(all(h["state"] == "stopped" for h in last["health"]))
+        self.assertEqual(last["health"][0]["reason"], "gateway_stopped: SIGTERM received")
 
 
 if __name__ == "__main__":

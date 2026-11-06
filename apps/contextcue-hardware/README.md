@@ -75,6 +75,17 @@ values and a reason. A connected Bridge can coexist with a failed sensor.
 The app can start without Thermo: expect `thermo_not_found`, null values and
 unavailable sensor health. It retries discovery on the next acquisition interval.
 
+When the Bridge fails, its health reason says which side failed:
+
+| Bridge reason prefix | Meaning |
+|---|---|
+| `mcu_unresponsive:` | RPCs timed out but the Arduino Router still answers `$/version`: the MCU sketch is hung, crashed or not running |
+| `router_unavailable:` | The router does not answer, or the connection to it broke |
+| `gateway_stopped:` | The app was asked to stop (SIGTERM from App Lab or `arduino-app-cli app stop`, or Ctrl+C). It prints one final record with every component `stopped` and exits 0 |
+
+Stopping the app takes the MCU side down first, so a poll that fails at that
+moment is reported as `gateway_stopped`, never as a hardware failure.
+
 ## Compile from VS Code or the terminal
 
 Install the official Arduino CLI. From the repository root:
