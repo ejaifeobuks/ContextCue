@@ -3,7 +3,6 @@ the real HardwareGateway driven by the hardware tests' fake Bridge peer."""
 
 import asyncio
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -72,24 +71,24 @@ class PreparationFlow(AppHarness):
         self.assertEqual(prep.lifecycle.value, "expired")
 
     async def test_acknowledgement_survives_restart(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = DataRepository(Path(tmp) / "cc.db")
-            self.build("event_rain", repo=repo)
-            await self.step(0.1)
-            await self.step()
-            [prep] = self.active("preparation")
+        tmp = support.temp_dir(self)
+        repo = DataRepository(Path(tmp) / "cc.db")
+        self.build("event_rain", repo=repo)
+        await self.step(0.1)
+        await self.step()
+        [prep] = self.active("preparation")
+        await self.app.action("acknowledge", {"notice_id": prep.notice_id})
+        await self.app.action("focus", {"enabled": True})
+        repo.close()
+        repo2 = DataRepository(Path(tmp) / "cc.db")
+        self.addCleanup(repo2.close)
+        self.build("event_rain", repo=repo2)
+        await self.step(0.1)
+        await self.step(1, 3)
+        self.assertEqual(self.active("preparation"), [])
+        self.assertTrue(self.app.notifications.focus)  # settings restored
+        with self.assertRaises(ActionError):
             await self.app.action("acknowledge", {"notice_id": prep.notice_id})
-            await self.app.action("focus", {"enabled": True})
-            repo.close()
-            repo2 = DataRepository(Path(tmp) / "cc.db")
-            self.addCleanup(repo2.close)
-            self.build("event_rain", repo=repo2)
-            await self.step(0.1)
-            await self.step(1, 3)
-            self.assertEqual(self.active("preparation"), [])
-            self.assertTrue(self.app.notifications.focus)  # settings restored
-            with self.assertRaises(ActionError):
-                await self.app.action("acknowledge", {"notice_id": prep.notice_id})
 
 
 class MorningFlow(AppHarness):

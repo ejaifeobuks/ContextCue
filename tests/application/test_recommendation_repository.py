@@ -3,7 +3,6 @@
 import asyncio
 import sqlite3
 import sys
-import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -219,39 +218,39 @@ class LlamaClientTests(unittest.IsolatedAsyncioTestCase):
 
 class RepositoryTests(unittest.TestCase):
     def test_settings_roundtrip_and_defaults(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "cc.db"
-            repo = DataRepository(path)
-            self.assertEqual(repo.restore_settings(), (Settings(), None))
-            repo.save_settings(Settings().updated({"audio_policy": "on_request", "focus": True}), NOW)
-            repo.close()
-            repo = DataRepository(path)
-            self.addCleanup(repo.close)
-            restored, problem = repo.restore_settings()
-            self.assertIsNone(problem)
-            self.assertEqual((restored.audio_policy, restored.focus), ("on_request", True))
+        tmp = support.temp_dir(self)
+        path = Path(tmp) / "cc.db"
+        repo = DataRepository(path)
+        self.assertEqual(repo.restore_settings(), (Settings(), None))
+        repo.save_settings(Settings().updated({"audio_policy": "on_request", "focus": True}), NOW)
+        repo.close()
+        repo = DataRepository(path)
+        self.addCleanup(repo.close)
+        restored, problem = repo.restore_settings()
+        self.assertIsNone(problem)
+        self.assertEqual((restored.audio_policy, restored.focus), ("on_request", True))
 
     def test_corrupt_database_is_kept_and_replaced(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "cc.db"
-            path.write_bytes(b"this is not a sqlite database" * 100)
-            repo = DataRepository(path)
-            self.addCleanup(repo.close)
-            self.assertIsNotNone(repo.recovered_from)
-            self.assertEqual(len(list(Path(tmp).glob("cc.corrupt-*"))), 1)
-            repo.save_settings(Settings(), NOW)
+        tmp = support.temp_dir(self)
+        path = Path(tmp) / "cc.db"
+        path.write_bytes(b"this is not a sqlite database" * 100)
+        repo = DataRepository(path)
+        self.addCleanup(repo.close)
+        self.assertIsNotNone(repo.recovered_from)
+        self.assertEqual(len(list(Path(tmp).glob("cc.corrupt-*"))), 1)
+        repo.save_settings(Settings(), NOW)
 
     def test_newer_schema_refused_visibly(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "cc.db"
-            DataRepository(path).close()
-            db = sqlite3.connect(path)
-            db.execute("UPDATE meta SET value='99' WHERE key='schema_version'")
-            db.commit()
-            db.close()
-            repo = DataRepository(path)
-            self.addCleanup(repo.close)
-            self.assertIn("newer", repo.recovered_from)
+        tmp = support.temp_dir(self)
+        path = Path(tmp) / "cc.db"
+        DataRepository(path).close()
+        db = sqlite3.connect(path)
+        db.execute("UPDATE meta SET value='99' WHERE key='schema_version'")
+        db.commit()
+        db.close()
+        repo = DataRepository(path)
+        self.addCleanup(repo.close)
+        self.assertIn("newer", repo.recovered_from)
 
     def test_retention_and_redaction(self):
         repo = DataRepository()

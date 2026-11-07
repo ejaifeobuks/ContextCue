@@ -26,7 +26,8 @@ def request(url, body=None):
         with urllib.request.urlopen(req, timeout=3) as res:
             return res.status, res.read(), res.headers.get("Content-Type")
     except urllib.error.HTTPError as exc:
-        return exc.code, exc.read(), exc.headers.get("Content-Type")
+        with exc:
+            return exc.code, exc.read(), exc.headers.get("Content-Type")
 
 
 class ServerTests(unittest.IsolatedAsyncioTestCase):

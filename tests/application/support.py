@@ -1,6 +1,8 @@
 """Shared helpers: deterministic clocks and fakes for application tests."""
 
+import shutil
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -51,3 +53,14 @@ class FakeSpeech:
 
     async def stop(self, playback_id):
         self.stopped.append(playback_id)
+
+
+def temp_dir(case) -> str:
+    """Temporary directory removed after the test's other cleanups.
+
+    Cleanups run last-in first-out, so repositories registered later are
+    closed first. Windows cannot delete an SQLite file that is still open.
+    """
+    path = tempfile.mkdtemp(prefix="contextcue-test-")
+    case.addCleanup(shutil.rmtree, path, ignore_errors=True)
+    return path
