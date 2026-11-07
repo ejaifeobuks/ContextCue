@@ -3,6 +3,7 @@
 // Implementation lives in src/: sensors/ (acquisition), state/ (publication),
 // rpc/ (Bridge handlers and serialization).
 #include "src/Uptime.h"
+#include "src/outputs/OutputController.h"
 #include "src/rpc/BridgeRpc.h"
 #include "src/sensors/SensorController.h"
 #include "src/state/PublishedState.h"
@@ -17,6 +18,7 @@ void publishSensors() {
 
 void setup() {
   sensors.begin();
+  contextcue::beginOutputs(contextcue::uptimeMs());  // quiet boot
   sensors.readTemperatureHumidity(contextcue::uptimeMs());
   publishSensors();
   contextcue::beginBridgeRpc();
@@ -28,6 +30,7 @@ void loop() {
   publishSensors();
   sensors.readLightIfDue(now);
   sensors.readDistanceIfDue(now);
+  contextcue::updateOutputs(contextcue::uptimeMs());
   // Keep callbacks safe even if the pinned RPC worker dispatches them early.
   // No Bridge.call(), nested RPC or serial printing from RPC callbacks.
   delay(1);

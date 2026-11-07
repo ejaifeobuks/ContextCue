@@ -151,7 +151,7 @@ class FirmwareSnapshotTests(unittest.TestCase):
         # By then a completed Distance reading has been published.
         later = self.records["final_recovery_open_begin"]
         self.assertEqual((later["light"], later["distance"]), (False, True))
-        self.assertEqual(initial["fw"], "0.1.4")
+        self.assertEqual(initial["fw"], "0.2.0")
 
     def test_concurrent_publication_preserves_sequence_content_and_uptime(self):
         self.assertGreaterEqual(len(self.stress), 1000)
@@ -167,6 +167,90 @@ class FirmwareSnapshotTests(unittest.TestCase):
             self.assertEqual(sample["q"], "valid")
             previous_seq, previous_up = sample["seq"], sample["up"]
         self.assertGreater(self.records["after_wrap"]["up"], 2**32)
+
+    # Outputs (HW-03, HW-07). LED words are (r << 24 | g << 16 | b << 8 | brightness).
+    AMBER = lambda brightness: (255 << 24) | (140 << 16) | brightness  # noqa: E731
+
+    def test_outputs_boot_quiet(self):
+        boot = self.records["out_boot_hw"]
+        self.assertEqual(boot["leds"], [0] * 8)
+        self.assertEqual((boot["shows"], boot["notones"], boot["tones"]), (1, 1, 0))
+        initial = self.records["out_initial"]
+        self.assertEqual((initial["px"], initial["bz"], initial["pat"], initial["lease"]),
+                         (True, True, "off", False))
+        self.assertIsNone(initial["last"])
+
+    def test_outputs_require_a_lease_and_apply_allowlisted_pattern(self):
+        self.assertEqual(self.records["out_before_lease"]["why"], "no_lease")
+        self.assertTrue(self.records["out_lease"]["ok"])
+        self.assertEqual(self.records["out_pattern"]["r"], "accepted")
+        state = self.records["out_pattern_state"]
+        self.assertEqual((state["pat"], state["b"], state["last"], state["o"]),
+                         ("notice", 25, "c1", "completed"))
+        self.assertEqual(self.records["out_pattern_hw"]["leds"], [type(self).AMBER(25)] * 8)
+
+    def test_outputs_reject_every_out_of_bounds_command(self):
+        expected = {
+            "out_duplicate": "duplicate_command",
+            "rej_brightness": "invalid_brightness",
+            "rej_pattern": "invalid_pattern",
+            "rej_duration": "invalid_duration",
+            "rej_frequency": "invalid_frequency",
+            "rej_ttl_zero": "invalid_ttl",
+            "rej_ttl_long": "invalid_ttl",
+            "rej_action": "unknown_action",
+            "rej_extra": "unexpected_parameter",
+            "rej_id": "invalid_command_id",
+            "rej_session": "session_mismatch",
+            "rej_long_session": "invalid_argument",
+        }
+        for label, reason in expected.items():
+            with self.subTest(label):
+                self.assertEqual(self.records[label]["r"], "rejected")
+                self.assertEqual(self.records[label]["why"], reason)
+                self.assertNotIn("id", self.records[label])  # rejected IDs are never echoed
+
+    def test_outputs_bounded_tone(self):
+        self.assertEqual(self.records["out_tone"]["r"], "accepted")
+        hardware = self.records["out_tone_hw"]
+        self.assertEqual((hardware["freq"], hardware["dur"], hardware["tones"]), (880, 200, 1))
+        self.assertTrue(self.records["out_tone_state"]["tone"])
+        self.assertFalse(self.records["out_tone_done"]["tone"])
+
+    def test_outputs_expired_command_is_not_applied(self):
+        self.assertEqual(self.records["out_short_ttl"]["r"], "accepted")
+        state = self.records["out_expired_state"]
+        self.assertEqual((state["last"], state["o"], state["why"]), ("e1", "expired", "ttl_elapsed"))
+        self.assertEqual(state["pat"], "notice")  # the fault pattern never reached the strip
+
+    def test_outputs_lease_loss_turns_everything_off(self):
+        before = self.records["out_before_expiry_hw"]
+        self.assertNotEqual(before["leds"], [0] * 8)
+        after = self.records["out_after_expiry_hw"]
+        self.assertEqual(after["leds"], [0] * 8)
+        self.assertEqual(after["notones"], before["notones"] + 1)
+        state = self.records["out_expired_lease"]
+        self.assertEqual((state["lease"], state["pat"]), (False, "off"))
+        self.assertEqual(self.records["out_after_expiry_cmd"]["why"], "no_lease")
+        # Stops can only make outputs safer, so they are accepted without a lease.
+        self.assertEqual(self.records["out_after_expiry_stop"]["r"], "accepted")
+        self.assertEqual(self.records["out_after_expiry_stop_state"]["o"], "completed")
+
+    def test_outputs_new_session_starts_fresh(self):
+        self.assertTrue(self.records["out_new_session"]["ok"])
+        self.assertEqual(self.records["out_new_session_reuse"]["r"], "accepted")
+        self.assertEqual(self.records["out_new_session_state"]["pat"], "notice")
+
+    def test_outputs_disconnect_and_reconnect(self):
+        self.assertFalse(self.records["out_pixels_gone"]["px"])
+        self.assertEqual(self.records["out_pixels_gone_cmd"]["why"], "pixels_unavailable")
+        self.assertTrue(self.records["out_pixels_back"]["px"])
+        self.assertEqual(self.records["out_pixels_back_hw"]["leds"], [type(self).AMBER(20)] * 8)
+
+    def test_outputs_longest_status_fits_the_transport(self):
+        state = self.records["out_long_id_state"]
+        self.assertEqual(state["last"], "abcdefghijklmnopqrstuvwxyz012345")
+        # setUpClass already rejects any record over 224 bytes.
 
 
 if __name__ == "__main__":

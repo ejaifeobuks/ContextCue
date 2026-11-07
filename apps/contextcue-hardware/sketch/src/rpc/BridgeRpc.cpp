@@ -7,6 +7,7 @@
 
 #include "../Config.h"
 #include "../Uptime.h"
+#include "../outputs/OutputController.h"
 #include "../state/PublishedState.h"
 
 namespace contextcue {
@@ -149,12 +150,77 @@ String readDistanceState() {
   return checkedJson(buffer, n);
 }
 
+String executeOutput(String session, String commandId, String action,
+                     String pattern, int brightnessPercent, int frequencyHz,
+                     int durationMs, int ttlMs) {
+  // Lengths are bounded before any copy; the controller re-validates content.
+  if (session.length() > kMaxIdLength || commandId.length() > kMaxIdLength ||
+      action.length() > 24 || pattern.length() > 8) {
+    return String("{\"v\":\"1.0\",\"r\":\"rejected\",\"why\":\"invalid_argument\"}");
+  }
+  const char* reason = submitOutputCommand(
+      session.c_str(), commandId.c_str(), action.c_str(), pattern.c_str(),
+      brightnessPercent, frequencyHz, durationMs, ttlMs, uptimeMs());
+  char buffer[kMaxJsonBytes + 1];
+  // A rejected ID may be malformed, so it is never echoed back.
+  const int n = reason == nullptr
+      ? snprintf(buffer, sizeof(buffer),
+                 "{\"v\":\"%s\",\"id\":\"%s\",\"r\":\"accepted\",\"why\":null}",
+                 kSchemaVersion, commandId.c_str())
+      : snprintf(buffer, sizeof(buffer),
+                 "{\"v\":\"%s\",\"r\":\"rejected\",\"why\":\"%s\"}",
+                 kSchemaVersion, reason);
+  return checkedJson(buffer, n);
+}
+
+String renewLease(String session) {
+  const char* reason = session.length() > kMaxIdLength
+      ? "invalid_session" : renewOutputLease(session.c_str(), uptimeMs());
+  char buffer[kMaxJsonBytes + 1];
+  const int n = reason == nullptr
+      ? snprintf(buffer, sizeof(buffer),
+                 "{\"v\":\"%s\",\"ok\":true,\"lease_ms\":%lu}", kSchemaVersion,
+                 static_cast<unsigned long>(kOutputLeaseMs))
+      : snprintf(buffer, sizeof(buffer),
+                 "{\"v\":\"%s\",\"ok\":false,\"why\":\"%s\"}", kSchemaVersion, reason);
+  return checkedJson(buffer, n);
+}
+
+String readOutputs() {
+  const PublishedState state = snapshotState();
+  const OutputStatus outputs = snapshotOutputs();
+  char last[kMaxIdLength + 3] = "null";
+  char outcome[16] = "null";
+  char reason[32] = "null";
+  if (outputs.lastOutcome != nullptr) {
+    snprintf(last, sizeof(last), "\"%s\"", outputs.lastId);
+    snprintf(outcome, sizeof(outcome), "\"%s\"", outputs.lastOutcome);
+  }
+  if (outputs.lastReason != nullptr) {
+    snprintf(reason, sizeof(reason), "\"%s\"", outputs.lastReason);
+  }
+  char buffer[kMaxJsonBytes + 1];
+  const int n = snprintf(
+      buffer, sizeof(buffer),
+      "{\"v\":\"%s\",\"boot\":\"%s\",\"up\":%llu,\"px\":%s,\"pat\":\"%s\","
+      "\"b\":%d,\"bz\":%s,\"tone\":%s,\"lease\":%s,\"last\":%s,\"o\":%s,\"why\":%s}",
+      kSchemaVersion, state.bootId, static_cast<unsigned long long>(uptimeMs()),
+      outputs.pixelsAvailable ? "true" : "false", outputs.pattern,
+      outputs.brightnessPercent, outputs.buzzerAvailable ? "true" : "false",
+      outputs.toneActive ? "true" : "false", outputs.leaseActive ? "true" : "false",
+      last, outcome, reason);
+  return checkedJson(buffer, n);
+}
+
 void beginBridgeRpc() {
   Bridge.begin();
   Bridge.provide_safe("cc_open", openSession);
   Bridge.provide_safe("cc_read", readState);
   Bridge.provide_safe("cc_read_light", readLightState);
   Bridge.provide_safe("cc_read_distance", readDistanceState);
+  Bridge.provide_safe("cc_out", executeOutput);
+  Bridge.provide_safe("cc_lease", renewLease);
+  Bridge.provide_safe("cc_read_outputs", readOutputs);
 }
 
 }  // namespace contextcue
