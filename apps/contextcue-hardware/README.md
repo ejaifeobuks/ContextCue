@@ -193,6 +193,46 @@ built-in Arduino functions:
 | `cc_read` | None | Schema, boot ID, sequence, current/observation uptime, validity, temperature, humidity, library identity and error |
 | `cc_read_light` | None | Schema, boot ID, sequence, current/observation uptime, validity, lux, and error |
 | `cc_read_distance` | None | Schema, boot ID, sequence, current/observation uptime, validity, millimeters, and error |
+| `cc_lease` | Session ID | `ok` and `lease_ms` (3000), or `ok: false` with `why`. A new session starts quiet: outputs off, earlier command IDs and queued commands dropped |
+| `cc_out` | Session ID, command ID, action, pattern, brightness %, frequency Hz, duration ms, TTL ms | `r: accepted` with the command ID, or `r: rejected` with `why`. Acceptance is not completion |
+| `cc_read_outputs` | None | Pixels/Buzzer availability (`px`, `bz`), current pattern and brightness, `tone`, `lease`, and the last command (`last`) with outcome `o` (`completed`, `failed`, `expired`) and `why` |
+
+### Outputs (Pixels and Buzzer)
+
+The MCU enforces the output rules itself, even when Linux has already checked a
+command:
+
+- **Allowlist:** `pixels.set_pattern` (`ready`, `notice`, `fault`, `off`),
+  `pixels.off`, `buzzer.short_tone`, `buzzer.stop`, `outputs.stop`. Parameters
+  an action does not use must be empty or zero.
+- **Bounds:** brightness 0-100%, tone 200-5000 Hz for at most 250 ms (the
+  Buzzer module times the tone; nothing loops), TTL 1-2000 ms, IDs of 1-32
+  characters from `A-Z a-z 0-9 - _`.
+- **Lease:** commands other than stops need a current lease for the same
+  session. Without renewal for 3 s the MCU silences the Buzzer and turns the
+  Pixels off. Stops are always accepted because they can only make outputs
+  safer.
+- **Duplicates and expiry:** the last 16 command IDs per session are rejected
+  as duplicates; a command whose TTL passes before the loop runs is reported
+  `expired` and never applied.
+- **Quiet boot and disconnects:** `setup()` turns both outputs off. The
+  library ignores I2C write errors, so availability comes from probing
+  `0x36` (Pixels) and `0x1E` (Buzzer) once a second; a reconnected Pixels
+  strip shows only the current pattern (off without a lease).
+
+On Linux, `HardwareGateway` exposes the outputs (firmware 0.2.0 or later; older
+firmware reports them as unsupported):
+
+| Method | Behaviour |
+|---|---|
+| `execute(DeviceCommand)` | Validates the command on Linux too (allowlist, exact parameters, brightness 0-1 converted to %, tone and TTL bounds), subtracts time spent waiting in the gateway from the TTL, and sends it once. Returns `accepted`, `rejected`, `expired` or `failed`. A transport failure is `failed ... (outcome unknown)`; the ID is never resent |
+| `heartbeat(session_id)` | Renews the lease through `cc_lease`; returns an `output_lease` health state |
+| `read_outputs()` | Fresh `OutputState`, including the last command's `CommandResult` (time = when the gateway first saw that outcome) |
+| `new_session_id()` | A valid new session ID; use one per app start |
+
+`read_state()` also reports `pixels` and `buzzer` health (skipped when the
+sensor reads already failed), and `close()` sends a best-effort `outputs.stop`
+for the leased session.
 
 The compact read keys map as follows:
 
@@ -286,10 +326,10 @@ concurrent publication across the 32-bit uptime boundary.
 Thermo, Light, and Distance are configured and independently advertised through
 the current gateway protocol. The gateway polls each module separately and
 preserves valid modules when another module is unavailable, malformed, stale,
-or disconnected. Pixels,
-Buzzer, display/touch, Bluetooth, output leases, control-event retention,
-ContextEngine, persistence, notices, model generation and the UI are subsequent
-implementation work. There are no output commands or audio actions in this app.
+or disconnected. Pixels and Buzzer commands, the output lease and output health
+are implemented (firmware 0.2.0); the console app does not issue output
+commands itself. Display/touch, Bluetooth, ContextEngine, persistence, notices,
+model generation and the UI are subsequent implementation work.
 The gateway does not yet satisfy the baseline's complete INT-01/INT-02 or HW-01
 through HW-07 requirements. Test-only peers are confined to `tests/hardware/`.
 

@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "apps/contextcue-hardware/python"))
 
-from contextcue_contracts import Quality
+from contextcue_contracts import DeviceCommand, Quality
 from contextcue_hardware.gateway import HardwareGateway, ProtocolError
 
 BOOT = "a" * 32
@@ -47,6 +47,13 @@ def distance_reading(**changes):
     return result
 
 
+def outputs_reading(**changes):
+    result = {"v": "1.0", "boot": BOOT, "up": 1200, "px": True, "pat": "off", "b": 0,
+              "bz": True, "tone": False, "lease": False, "last": None, "o": None, "why": None}
+    result.update(changes)
+    return result
+
+
 class TestPeer:
     def __init__(self):
         self.info = {"v": "1.0", "boot": BOOT, "fw": "0.1.0", "ok": True,
@@ -59,6 +66,12 @@ class TestPeer:
         self.failure = None
         self.router_alive = True
         self.closed = False
+        # Outputs (firmware 0.2.0+). Sensor tests use firmware 0.1.0 without them.
+        self.out_calls = []
+        self.out_failure = None
+        self.out_response = None
+        self.lease_data = {"v": "1.0", "ok": True, "lease_ms": 3000}
+        self.outputs_data = outputs_reading()
 
     def router_version(self, timeout):
         if not self.router_alive:
@@ -73,11 +86,19 @@ class TestPeer:
         self.calls.append((method, args, timeout))
         if self.failure:
             raise self.failure
+        if method == "cc_out":
+            self.out_calls.append(args)
+            if self.out_failure:
+                raise self.out_failure
+            response = self.out_response or {"v": "1.0", "id": args[1], "r": "accepted", "why": None}
+            return json.dumps(response)
         result = {
             "cc_open": self.info,
             "cc_read": self.data,
             "cc_read_light": self.light_data,
             "cc_read_distance": self.distance_data,
+            "cc_lease": self.lease_data,
+            "cc_read_outputs": self.outputs_data,
         }.get(method)
         if result is None:
             raise AssertionError(f"Unexpected RPC method: {method}")
@@ -362,6 +383,168 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         release.set()
         state = await pending
         self.assertEqual(state.health[0].state, "ready")
+
+
+def command(**changes):
+    fields = {"schema_version": "1.0", "session_id": "s-test", "command_id": "cmd-1",
+              "target": "pixels", "action": "set_pattern",
+              "parameters": {"pattern": "notice", "brightness": 0.25}, "ttl_ms": 2000}
+    fields.update(changes)
+    return DeviceCommand(**fields)
+
+
+class OutputGatewayTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.peer = TestPeer()
+        self.peer.info["fw"] = "0.2.0"
+        self.clock = TestClock()
+        self.gateway = HardwareGateway(self.peer, clock=self.clock)
+        await self.gateway.read_state()  # handshake
+
+    async def asyncTearDown(self):
+        await self.gateway.close()
+
+    async def test_capabilities_and_health_include_outputs(self):
+        capabilities = await self.gateway.get_capabilities()
+        self.assertEqual(capabilities.output_patterns, ("ready", "notice", "fault", "off"))
+        self.assertIn("execute", capabilities.supported_operations)
+        self.assertIn("pixels", capabilities.configured_modules)
+        self.assertIn("buzzer", capabilities.available_modules)
+        health = {h.component_id: h for h in (await self.gateway.read_state()).health}
+        self.assertEqual((health["pixels"].state, health["buzzer"].state), ("ready", "ready"))
+        self.assertEqual(health["pixels"].execution_location, "uno_q_mcu")
+
+    async def test_missing_module_is_named(self):
+        self.peer.outputs_data = outputs_reading(px=False)
+        state = await self.gateway.read_state()
+        pixels = next(h for h in state.health if h.component_id == "pixels")
+        self.assertEqual((pixels.state, pixels.reason), ("unavailable", "pixels_not_found"))
+        capabilities = await self.gateway.get_capabilities()
+        self.assertNotIn("pixels", capabilities.available_modules)
+
+    async def test_execute_maps_command_to_bounded_mcu_call(self):
+        result = await self.gateway.execute(command())
+        self.assertEqual((result.status, result.reason, result.command_id), ("accepted", None, "cmd-1"))
+        session, command_id, action, pattern, percent, frequency, duration, ttl = self.peer.out_calls[0]
+        self.assertEqual((session, command_id, action, pattern, percent, frequency, duration),
+                         ("s-test", "cmd-1", "pixels.set_pattern", "notice", 25, 0, 0))
+        self.assertTrue(0 < ttl <= 2000)
+        tone = await self.gateway.execute(command(
+            command_id="cmd-2", target="buzzer", action="short_tone",
+            parameters={"frequency_hz": 880, "duration_ms": 200}))
+        self.assertEqual(tone.status, "accepted")
+        self.assertEqual(self.peer.out_calls[1][2:7], ("buzzer.short_tone", "", 0, 880, 200))
+
+    async def test_linux_rejects_invalid_commands_without_sending(self):
+        cases = {
+            "incompatible_schema_version": command(schema_version="2.0"),
+            "invalid_session": command(session_id="bad session"),
+            "invalid_command_id": command(command_id="x" * 33),
+            "unknown_action": command(target="gpio", action="write", parameters={}),
+            "invalid_parameters": command(parameters={"pattern": "notice"}),
+            "invalid_pattern": command(parameters={"pattern": "rainbow", "brightness": 0.5}),
+            "invalid_brightness": command(parameters={"pattern": "notice", "brightness": 1.5}),
+            "invalid_duration": command(target="buzzer", action="short_tone",
+                                        parameters={"frequency_hz": 880, "duration_ms": 300}),
+            "invalid_frequency": command(target="buzzer", action="short_tone",
+                                         parameters={"frequency_hz": True, "duration_ms": 100}),
+            "invalid_ttl": command(ttl_ms=0),
+        }
+        for reason, bad in cases.items():
+            with self.subTest(reason):
+                result = await self.gateway.execute(bad)
+                self.assertEqual((result.status, result.reason), ("rejected", reason))
+        self.assertEqual(self.peer.out_calls, [])
+
+    async def test_duplicate_command_is_never_resent(self):
+        await self.gateway.execute(command())
+        duplicate = await self.gateway.execute(command())
+        self.assertEqual((duplicate.status, duplicate.reason), ("rejected", "duplicate_command"))
+        self.assertEqual(len(self.peer.out_calls), 1)
+        # A new session may reuse IDs, as on the MCU.
+        fresh = await self.gateway.execute(command(session_id="s-other"))
+        self.assertEqual(fresh.status, "accepted")
+
+    async def test_mcu_rejection_reason_is_reported(self):
+        self.peer.out_response = {"v": "1.0", "r": "rejected", "why": "no_lease"}
+        result = await self.gateway.execute(command())
+        self.assertEqual((result.status, result.reason), ("rejected", "no_lease"))
+
+    async def test_transport_failure_is_unknown_outcome_and_not_retried(self):
+        self.peer.out_failure = TimeoutError("Request 'cc_out' timed out after 0.75s")
+        result = await self.gateway.execute(command())
+        self.assertEqual(result.status, "failed")
+        self.assertTrue(result.reason.startswith("mcu_unresponsive: "))
+        self.assertTrue(result.reason.endswith("(outcome unknown)"))
+        self.peer.out_failure = None
+        retry = await self.gateway.execute(command())
+        self.assertEqual(retry.reason, "duplicate_command")
+        self.assertEqual(len(self.peer.out_calls), 1)
+
+    async def test_time_waiting_in_gateway_comes_out_of_the_ttl(self):
+        async with self.gateway._lock:  # a poll holds the gateway
+            pending = asyncio.create_task(self.gateway.execute(command(ttl_ms=500)))
+            await asyncio.sleep(0)
+            self.clock.now += 0.2
+        await pending
+        self.assertLessEqual(self.peer.out_calls[-1][7], 300)
+        async with self.gateway._lock:
+            late = asyncio.create_task(self.gateway.execute(command(command_id="cmd-late", ttl_ms=100)))
+            await asyncio.sleep(0)
+            self.clock.now += 0.2
+        result = await late
+        self.assertEqual((result.status, result.reason), ("expired", "ttl_elapsed_in_gateway"))
+        self.assertEqual(len(self.peer.out_calls), 1)
+
+    async def test_heartbeat_renews_lease(self):
+        lease = await self.gateway.heartbeat("s-test")
+        self.assertEqual((lease.component_id, lease.state), ("output_lease", "ready"))
+        self.peer.lease_data = {"v": "1.0", "ok": False, "why": "invalid_session"}
+        refused = await self.gateway.heartbeat("s-test")
+        self.assertEqual((refused.state, refused.reason), ("unavailable", "invalid_session"))
+        self.assertEqual((await self.gateway.heartbeat("bad id")).reason, "invalid_session")
+
+    async def test_read_outputs_reports_completion(self):
+        self.peer.outputs_data = outputs_reading(pat="notice", b=25, lease=True,
+                                                 last="cmd-1", o="completed")
+        outputs = await self.gateway.read_outputs()
+        self.assertEqual((outputs.pattern, outputs.brightness, outputs.lease_active),
+                         ("notice", 0.25, True))
+        self.assertEqual((outputs.last_result.command_id, outputs.last_result.status),
+                         ("cmd-1", "completed"))
+        first_seen = outputs.last_result.at
+        self.clock.now += 5
+        again = await self.gateway.read_outputs()
+        self.assertEqual(again.last_result.at, first_seen)  # time of first observation
+
+    async def test_malformed_output_report_does_not_affect_sensors(self):
+        self.peer.outputs_data = outputs_reading(pat="rainbow")
+        state = await self.gateway.read_state()
+        health = {h.component_id: h for h in state.health}
+        self.assertEqual(health["bridge"].state, "ready")
+        self.assertEqual(health["thermo"].state, "ready")
+        self.assertEqual(health["pixels"].state, "unavailable")
+        self.assertIsNone(await self.gateway.read_outputs())
+
+    async def test_old_firmware_has_no_outputs(self):
+        peer = TestPeer()  # firmware 0.1.0
+        gateway = HardwareGateway(peer, clock=self.clock)
+        state = await gateway.read_state()
+        self.assertNotIn("pixels", {h.component_id for h in state.health})
+        result = await gateway.execute(command())
+        self.assertEqual((result.status, result.reason), ("rejected", "outputs_not_supported_by_firmware"))
+        await gateway.close()
+
+    async def test_close_stops_outputs_for_the_leased_session(self):
+        await self.gateway.heartbeat("s-test")
+        await self.gateway.close()
+        self.assertEqual(self.peer.out_calls[-1][0], "s-test")
+        self.assertEqual(self.peer.out_calls[-1][2], "outputs.stop")
+
+    async def test_session_ids_are_valid_for_the_mcu(self):
+        session = HardwareGateway.new_session_id()
+        self.assertRegex(session, r"^[A-Za-z0-9_-]{1,32}$")
+        self.assertNotEqual(session, HardwareGateway.new_session_id())
 
 
 class CliStopTests(unittest.TestCase):

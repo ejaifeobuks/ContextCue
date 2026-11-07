@@ -3,7 +3,9 @@
 import asyncio
 import json
 import math
+import re
 import time
+from collections import deque
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -20,6 +22,22 @@ from contextcue_contracts import (
     Quality,
     SensorSample,
 )
+from contextcue_contracts.outputs import (
+    ACCEPTED,
+    COMPLETED,
+    EXPIRED,
+    FAILED,
+    MAX_COMMAND_TTL_MS,
+    MAX_TONE_DURATION_MS,
+    MAX_TONE_FREQUENCY_HZ,
+    MIN_TONE_FREQUENCY_HZ,
+    OUTPUT_ACTIONS,
+    PIXEL_PATTERNS,
+    REJECTED,
+    CommandResult,
+    DeviceCommand,
+    OutputState,
+)
 
 from .transport import ArduinoBridgeTransport, BridgeTransport
 
@@ -32,6 +50,68 @@ class ProtocolError(ValueError):
 MCU_UNRESPONSIVE = "mcu_unresponsive"      # router answers; the MCU sketch does not
 ROUTER_UNAVAILABLE = "router_unavailable"  # the Linux-side Arduino Router does not answer
 GATEWAY_STOPPED = "gateway_stopped"        # this process was asked to stop (e.g. SIGTERM)
+
+SENSOR_MODULES = ("thermo", "light", "distance")
+OUTPUT_MODULES = ("pixels", "buzzer")
+OUTPUTS_MIN_FIRMWARE = (0, 2, 0)  # firmware that implements cc_out/cc_lease/cc_read_outputs
+_ID = re.compile(r"[A-Za-z0-9_-]{1,32}")
+_REMEMBERED_COMMAND_IDS = 256
+
+
+def _firmware_tuple(version: str) -> tuple[int, ...]:
+    try:
+        return tuple(int(part) for part in version.split("."))
+    except ValueError:
+        return ()
+
+
+def _is_int(value: object) -> bool:
+    return type(value) is int  # bool is not an int here
+
+
+def _validate_command(command: DeviceCommand) -> tuple:
+    """Linux-side check of a DeviceCommand; the MCU repeats it independently.
+
+    Returns the cc_out arguments (action, pattern, brightness %, frequency Hz,
+    duration ms) or raises ValueError with a short reason.
+    """
+    major = str(command.schema_version).split(".")[0]
+    if major != "1":
+        raise ValueError("incompatible_schema_version")
+    for name, value in (("session", command.session_id), ("command_id", command.command_id)):
+        if not isinstance(value, str) or not _ID.fullmatch(value):
+            raise ValueError(f"invalid_{name}")
+    allowed = OUTPUT_ACTIONS.get((command.target, command.action))
+    if allowed is None:
+        raise ValueError("unknown_action")
+    parameters = command.parameters or {}
+    if not isinstance(parameters, dict) or set(parameters) != allowed:
+        raise ValueError("invalid_parameters")
+    if not _is_int(command.ttl_ms) or not 0 < command.ttl_ms <= MAX_COMMAND_TTL_MS:
+        raise ValueError("invalid_ttl")
+    if command.notice_id is not None and (
+            not isinstance(command.notice_id, str) or not 0 < len(command.notice_id) <= 64):
+        raise ValueError("invalid_notice_id")
+    if command.notice_revision is not None and (
+            not _is_int(command.notice_revision) or command.notice_revision < 0):
+        raise ValueError("invalid_notice_revision")
+    pattern, percent, frequency, duration = "", 0, 0, 0
+    if "pattern" in allowed:
+        pattern = parameters["pattern"]
+        if pattern not in PIXEL_PATTERNS:
+            raise ValueError("invalid_pattern")
+        brightness = parameters["brightness"]
+        if (type(brightness) not in (int, float) or not math.isfinite(brightness)
+                or not 0 <= brightness <= 1):
+            raise ValueError("invalid_brightness")
+        percent = round(brightness * 100)
+    if "frequency_hz" in allowed:
+        frequency, duration = parameters["frequency_hz"], parameters["duration_ms"]
+        if not _is_int(frequency) or not MIN_TONE_FREQUENCY_HZ <= frequency <= MAX_TONE_FREQUENCY_HZ:
+            raise ValueError("invalid_frequency")
+        if not _is_int(duration) or not 0 < duration <= MAX_TONE_DURATION_MS:
+            raise ValueError("invalid_duration")
+    return f"{command.target}.{command.action}", pattern, percent, frequency, duration
 
 
 class Clock:
@@ -89,8 +169,9 @@ class HardwareGateway:
     """Call from one asyncio event loop; blocking Bridge I/O runs in a worker.
 
     Sensor modules are polled independently so one unavailable module does not
-    hide valid data from the others. Output and control-event APIs will be
-    added with their firmware implementations, rather than pretend success.
+    hide valid data from the others. Outputs (firmware 0.2.0+) are reached only
+    through execute() and heartbeat(); the gateway never retries or replays a
+    command, so a command is sent at most once.
     """
 
     def __init__(
@@ -117,6 +198,14 @@ class HardwareGateway:
         self._health = HealthState("bridge", "starting", "Not connected", None)
         self._needs_discovery = True
         self._closed = False
+        self._outputs_supported = False
+        self._outputs: OutputState | None = None
+        self._outputs_error: str | None = None
+        self._outputs_received_at: str | None = None
+        self._result_seen_at: dict[tuple[str, str], str] = {}
+        self._command_session: str | None = None
+        self._sent_ids: deque[str] = deque(maxlen=_REMEMBERED_COMMAND_IDS)
+        self._lease_session: str | None = None
 
     async def _rpc(self, method: str, *args: object) -> dict:
         raw = await asyncio.to_thread(
@@ -141,21 +230,26 @@ class HardwareGateway:
             if type(flag) is not bool:
                 raise ProtocolError(f"Invalid {module} capability")
             reported[module] = flag
+        firmware = _text(info, "fw")
         same_boot = self._capabilities is not None and self._capabilities.boot_id == boot
+        if not same_boot:
+            self._outputs = None
+            self._outputs_error = None
+            self._result_seen_at = {}
+        self._outputs_supported = _firmware_tuple(firmware) >= OUTPUTS_MIN_FIRMWARE
         available_modules = (
-            tuple(
-                module for module in ("thermo", "light", "distance")
-                if self._modules[module].health is not None
-                and self._modules[module].health.state == "ready"
-            )
+            self._available_modules()
             if same_boot else
-            tuple(module for module in ("thermo", "light", "distance") if reported[module])
+            tuple(module for module in SENSOR_MODULES if reported[module])
         )
+        operations = ("get_capabilities", "read_state", "get_device_health")
+        if self._outputs_supported:
+            operations += ("execute", "heartbeat", "read_outputs")
         capabilities = HardwareCapabilities(
             schema_version=SCHEMA_VERSION,
             boot_id=boot,
-            firmware_version=_text(info, "fw"),
-            configured_modules=("thermo", "light", "distance"),
+            firmware_version=firmware,
+            configured_modules=SENSOR_MODULES + (OUTPUT_MODULES if self._outputs_supported else ()),
             available_modules=available_modules,
             sensor_driver=driver,
             units={
@@ -163,9 +257,8 @@ class HardwareGateway:
                 "ambient_light": "lux", "distance": "mm",
             },
             versions={key: _text(info, key) for key in ("core", "bridge", "modulino", "hs", "sht")},
-            supported_operations=(
-                "get_capabilities", "read_state", "get_device_health",
-            ),
+            supported_operations=operations,
+            output_patterns=PIXEL_PATTERNS if self._outputs_supported else (),
         )
         if self._capabilities is None or self._capabilities.boot_id != boot:
             self._modules = {
@@ -175,7 +268,22 @@ class HardwareGateway:
             }
         self._capabilities = capabilities
         self._needs_discovery = False
-        return capabilities
+        if self._outputs_supported and not same_boot:
+            await self._refresh_outputs()
+        return self._capabilities
+
+    def _available_modules(self) -> tuple[str, ...]:
+        sensors = tuple(
+            module for module in SENSOR_MODULES
+            if self._modules[module].health is not None
+            and self._modules[module].health.state == "ready"
+        )
+        outputs = self._outputs
+        present = () if outputs is None or self._outputs_error else tuple(
+            module for module, ok in (("pixels", outputs.pixels_available),
+                                      ("buzzer", outputs.buzzer_available)) if ok
+        )
+        return sensors + present
 
     async def get_capabilities(self) -> HardwareCapabilities:
         async with self._lock:
@@ -233,9 +341,144 @@ class HardwareGateway:
                 self._last_success = _timestamp(self._clock.utcnow())
                 self._last_success_monotonic = end
                 self._health = HealthState("bridge", "ready", None, self._last_success)
+                if self._outputs_supported:
+                    await self._refresh_outputs()
             except Exception as exc:
                 self._mark_failed(await self._diagnose(exc))
             return self._state()
+
+    async def _refresh_outputs(self) -> None:
+        """Read cc_read_outputs; failures affect output health only."""
+        try:
+            data = await self._rpc("cc_read_outputs")
+            self._outputs = self._decode_outputs(data)
+            self._outputs_error = None
+            self._outputs_received_at = _timestamp(self._clock.utcnow())
+        except Exception as exc:
+            self._outputs_error = str(exc)
+        self._capabilities = replace(self._capabilities, available_modules=self._available_modules())
+
+    def _decode_outputs(self, data: dict) -> OutputState:
+        boot = _text(data, "boot")
+        if boot != self._capabilities.boot_id:
+            self._needs_discovery = True
+            raise ProtocolError("MCU reset since handshake")
+        _integer(data, "up")
+        flags = {}
+        for key in ("px", "bz", "tone", "lease"):
+            if type(data.get(key)) is not bool:
+                raise ProtocolError(f"Invalid output flag: {key}")
+            flags[key] = data[key]
+        pattern = data.get("pat")
+        if pattern not in PIXEL_PATTERNS:
+            raise ProtocolError("Invalid Pixels pattern")
+        brightness = data.get("b")
+        if not _is_int(brightness) or not 0 <= brightness <= 100:
+            raise ProtocolError("Invalid Pixels brightness")
+        last, outcome, why = data.get("last"), data.get("o"), data.get("why")
+        result = None
+        if last is not None or outcome is not None:
+            if not isinstance(last, str) or not _ID.fullmatch(last):
+                raise ProtocolError("Invalid last command ID")
+            if outcome not in (COMPLETED, FAILED, EXPIRED):
+                raise ProtocolError("Invalid command outcome")
+            if why is not None and (not isinstance(why, str) or not 0 < len(why) <= 64):
+                raise ProtocolError("Invalid command reason")
+            # The MCU sends no time; record when this gateway first saw the outcome.
+            at = self._result_seen_at.setdefault(
+                (last, outcome), _timestamp(self._clock.utcnow()))
+            result = CommandResult(SCHEMA_VERSION, last, outcome, why, at)
+        elif why is not None:
+            raise ProtocolError("Command reason without a command")
+        return OutputState(
+            SCHEMA_VERSION, boot, flags["px"], flags["bz"], pattern, brightness / 100,
+            flags["tone"], flags["lease"], result,
+        )
+
+    @staticmethod
+    def new_session_id() -> str:
+        """A fresh output session ID. Use a new one each time the app starts, so
+        the MCU starts quiet and never inherits an earlier session's outputs."""
+        return f"s-{uuid4().hex[:24]}"
+
+    async def execute(self, command: DeviceCommand) -> CommandResult:
+        """Send one bounded output command. Returns accepted (queued on the MCU),
+        rejected, expired, or failed; completion appears later in read_outputs().
+        A command ID is sent at most once, even when the outcome is unknown."""
+        received = self._clock.monotonic()
+        command_id = command.command_id if isinstance(command.command_id, str) else ""
+
+        def result(status: str, reason: str | None) -> CommandResult:
+            return CommandResult(SCHEMA_VERSION, command_id, status, reason,
+                                 _timestamp(self._clock.utcnow()))
+
+        try:
+            action, pattern, percent, frequency, duration = _validate_command(command)
+        except ValueError as exc:
+            return result(REJECTED, str(exc))
+        async with self._lock:
+            self._ensure_open()
+            if command.session_id != self._command_session:
+                self._command_session = command.session_id
+                self._sent_ids.clear()
+            if command_id in self._sent_ids:
+                return result(REJECTED, "duplicate_command")
+            if self._needs_discovery or self._capabilities is None:
+                return result(FAILED, "bridge_unavailable")
+            if not self._outputs_supported:
+                return result(REJECTED, "outputs_not_supported_by_firmware")
+            # Time spent waiting here (behind a poll) comes out of the TTL.
+            remaining = command.ttl_ms - math.ceil((self._clock.monotonic() - received) * 1000)
+            self._sent_ids.append(command_id)  # before sending: never replay
+            if remaining <= 0:
+                return result(EXPIRED, "ttl_elapsed_in_gateway")
+            try:
+                data = await self._rpc("cc_out", command.session_id, command_id, action,
+                                       pattern, percent, frequency, duration, remaining)
+            except Exception as exc:
+                return result(FAILED, f"{await self._diagnose(exc)} (outcome unknown)")
+            status = data.get("r")
+            if status == ACCEPTED and data.get("id") == command_id:
+                return result(ACCEPTED, None)
+            why = data.get("why")
+            if status == REJECTED and isinstance(why, str) and 0 < len(why) <= 64:
+                return result(REJECTED, why)
+            return result(FAILED, "Invalid cc_out response (outcome unknown)")
+
+    async def heartbeat(self, session_id: str) -> HealthState:
+        """Renew the output lease (call about once a second). Without renewal the
+        MCU silences the Buzzer and turns Pixels off after 3 s."""
+        async with self._lock:
+            self._ensure_open()
+
+            def lease(state: str, reason: str | None) -> HealthState:
+                at = _timestamp(self._clock.utcnow()) if state == "ready" else None
+                return HealthState("output_lease", state, reason, at, "uno_q_mcu")
+
+            if not isinstance(session_id, str) or not _ID.fullmatch(session_id):
+                return lease("unavailable", "invalid_session")
+            if self._needs_discovery or self._capabilities is None:
+                return lease("unavailable", "bridge_unavailable")
+            if not self._outputs_supported:
+                return lease("unavailable", "outputs_not_supported_by_firmware")
+            try:
+                data = await self._rpc("cc_lease", session_id)
+            except Exception as exc:
+                return lease("unavailable", await self._diagnose(exc))
+            if data.get("ok") is True and _is_int(data.get("lease_ms")):
+                self._lease_session = session_id
+                return lease("ready", None)
+            why = data.get("why")
+            return lease("unavailable", why if isinstance(why, str) else "Invalid cc_lease response")
+
+    async def read_outputs(self) -> OutputState | None:
+        """Fresh output report, or None when outputs are unsupported/unreadable."""
+        async with self._lock:
+            self._ensure_open()
+            if self._needs_discovery or not self._outputs_supported:
+                return None
+            await self._refresh_outputs()
+            return None if self._outputs_error else self._outputs
 
     def stopped_state(self, reason: str) -> GatewayState:
         """Final record for a requested stop, distinct from any hardware failure.
@@ -380,11 +623,7 @@ class HardwareGateway:
         )
         self._capabilities = replace(
             self._capabilities,
-            available_modules=tuple(
-                module for module in ("thermo", "light", "distance")
-                if self._modules[module].health is not None
-                and self._modules[module].health.state == "ready"
-            ),
+            available_modules=self._available_modules(),
             sensor_driver=driver if module_id == "thermo"
             else self._capabilities.sensor_driver,
         )
@@ -440,11 +679,32 @@ class HardwareGateway:
                 module_id, "ready" if valid else "unavailable", reason,
                 module_samples[0].received_at if valid else None, "uno_q_mcu",
             ))
+        if self._outputs_supported:
+            health.extend(self._output_health(bridge))
         return GatewayState(
             SCHEMA_VERSION,
             self._capabilities.boot_id if self._capabilities else None,
             samples, tuple(health),
         )
+
+    def _output_health(self, bridge: HealthState) -> list[HealthState]:
+        health = []
+        for module, field in (("pixels", "pixels_available"), ("buzzer", "buzzer_available")):
+            if bridge.state != "ready":
+                state, reason = "unavailable", "bridge_unavailable"
+            elif self._outputs_error is not None:
+                state, reason = "unavailable", self._outputs_error
+            elif self._outputs is None:
+                state, reason = "unavailable", "No output report received"
+            elif getattr(self._outputs, field):
+                state, reason = "ready", None
+            else:
+                state, reason = "unavailable", f"{module}_not_found"
+            health.append(HealthState(
+                module, state, reason,
+                self._outputs_received_at if state == "ready" else None, "uno_q_mcu",
+            ))
+        return health
 
     def get_device_health(self) -> tuple[HealthState, ...]:
         return self._state().health
@@ -452,8 +712,15 @@ class HardwareGateway:
     async def close(self) -> None:
         async with self._lock:
             if not self._closed:
+                if self._lease_session and self._outputs_supported and not self._needs_discovery:
+                    try:  # stop at once instead of waiting for the lease watchdog
+                        await self._rpc("cc_out", self._lease_session, f"stop-{uuid4().hex[:24]}",
+                                        "outputs.stop", "", 0, 0, 0, MAX_COMMAND_TTL_MS)
+                    except Exception:
+                        pass  # the MCU still turns outputs off within 3 s without renewal
                 await asyncio.to_thread(self._transport.close)
                 self._closed = True
+                self._outputs = None
                 self._modules = {
                     "thermo": _ModuleTracker(),
                     "light": _ModuleTracker(),
