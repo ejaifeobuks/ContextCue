@@ -7,7 +7,7 @@ This document records the differences found between the earlier
 **ContextCue Software Baseline v1**.
 
 It records decisions made during review and keeps unresolved questions visible.
-The software baseline remains the authority for safety, validation, freshness,
+Baseline v1.1 (6 November 2026) adopts the resolved decisions below. The software baseline remains the authority for safety, validation, freshness,
 command limits, and hardware behavior unless a later decision formally changes
 it.
 
@@ -18,7 +18,7 @@ it.
 | Motion versus Distance | Resolved |
 | Camera gesture recognition | Resolved |
 | LLM requirement | Resolved |
-| Calendar and weather sources | Partially resolved |
+| Calendar and weather sources | Resolved (baseline v1.1); provider operational details open |
 | Live-source setup behavior | Resolved |
 | Separate demo light | Resolved |
 | Physical command policy | Resolved |
@@ -371,7 +371,7 @@ was attempted or a Bluetooth endpoint was connected.
 
 ---
 
-## 8. Physical Buttons versus touchscreen controls
+## 9. Physical Buttons versus touchscreen controls
 
 The selected hardware no longer includes the physical Buttons Modulino. The
 touchscreen is the only user input surface and provides acknowledgement, mute,
@@ -386,7 +386,7 @@ automatic-audio suppression, bounded-duration, and output-lease rules.
 
 ---
 
-## 9. Overall reconciliation
+## 10. Overall reconciliation
 
 The earlier prototype plan and later baseline share the same broad product
 vision:

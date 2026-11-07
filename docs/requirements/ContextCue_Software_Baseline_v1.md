@@ -1,6 +1,6 @@
 # ContextCue software requirements baseline
 
-Version 1.0 | 25 October 2026 | Engineering handoff
+Version 1.1 | 6 November 2026 | Engineering handoff (v1.0: 25 October 2026; changes in §11)
 
 ContextCue combines labeled calendar/weather scenarios with real indoor sensing to deliver explainable desk cues. **Actual LLM-generated briefings and local Bluetooth speech are required**, confirmed by the user on October 25. Deterministic software controls freshness, eligibility, priority, Focus, mute, acknowledgement and output permissions.
 
@@ -14,7 +14,7 @@ Direct user decisions take precedence, then the October 3 PRD and revised propos
 |---|---|
 | LLM | Actual generation required. Factual fallback is required failure behavior but cannot pass generation acceptance. No direct hardware authority or invented source facts. |
 | Deployment | UNO Q is the target, subject to benchmarking. An explicitly disclosed off-board contingency requires a deployment decision and does not meet the on-board goal. No silent cloud fallback. |
-| Calendar/weather | Visibly labeled deterministic fictional fixtures; live providers deferred. Indoor sensing cannot substitute for outdoor forecasts. |
+| Calendar/weather | Visibly labeled deterministic fictional fixtures are required and are the only sources for the Qualcomm demonstration (no account or network needed). Optional live sources run side by side through the same contract: Google Calendar and Microsoft 365 adapters (Clerk-managed OAuth, tokens backend-only) and an Open-Meteo weather adapter. Live adapters follow the demonstration. A live failure is labeled and never silently replaced by fixture data. Indoor sensing cannot substitute for outdoor forecasts. |
 | Panel | Five selected Modulinos: Thermo, Light, Distance, Pixels, Buzzer. Three sensing modules, no physical input module, two outputs; touchscreen is a separate Linux input. |
 | Approach/wake | Calibrated Distance proximity and explicit input replace older PIR/motion wording. Nearby object does not mean identified person or occupied room. |
 | Camera/microphone | Brio 105 is owned but capture, inference, gestures, speech recognition and wake word are deferred. Capture stays off; spoken output does not require a microphone. |
@@ -49,16 +49,17 @@ flowchart TB
       Gateway <--> Bridge
       Bridge <--> MCU
     end
-    Core <-->|Telemetry, controls, health and commands| Gateway
+    Core <-->|Telemetry, health and commands| Gateway
     Router <-->|Playback, stop and status| Gateway
-    MCU <-->|Qwiic I2C| Panel[Six selected Modulinos]
+    MCU <-->|Qwiic I2C| Panel[Five selected Modulinos]
     Gateway <--> Screen[Display and USB touch]
   end
   Person <--> UI
   Person --> Panel
   Gateway -->|Bluetooth| Speaker[Tested speaker or headset]
   Fixtures[Local labeled calendar/weather fixtures] --> Core
-  Deferred[Deferred: live APIs, remote alerts, camera and microphone]
+  Live[Optional live adapters: Google, Microsoft 365, Open-Meteo] -.-> Core
+  Deferred[Deferred: remote alerts, camera and microphone]
   Deferred -.-> Core
 ```
 
@@ -150,22 +151,20 @@ Common rules:
 |---|---|---|
 | HardwareCapabilities | HW to SWE | Schema, firmware/core/library versions, boot ID, configured/available modules, units, output limits/patterns, native brightness capability, audio-adapter version |
 | SensorSample | HW to SWE | Event/module/metric IDs, value/unit, sequence/boot ID, observed uptime, mapped observation/receipt times, clock quality, source mode, validity/error |
-| ControlEvent | HW to SWE | Event ID, boot/sequence, control ID, press/rotate, delta where relevant, observation time; SWE deduplicates IDs |
 | ContextEvent | SWE adapters to store | Evidence ID/revision, source/type, value/unit or structured payload, observation/receipt time, validity interval, freshness limit, source mode, quality/provenance |
 | ContextSnapshot | SWE context to model | Request/snapshot IDs and revision, immutable evidence, code-calculated facts, explicit preferences, mode/audio policy, reason, creation time/deadline |
 | ModelResponse | Worker to validator | Request/snapshot IDs, category morning/preparation/comfort/context_answer, short text, evidence IDs. Service attaches actual execution location, model/runtime/prompt versions and timings. |
 | Notice | SWE policy to outputs | ID/revision/dedupe key, category/priority/text, evidence IDs/revisions, creation/expiry, validation outcome, origin, lifecycle, permitted routes, acknowledgement and route results |
 | DeviceCommand | SWE to HW | Version, session/command ID, allowlisted target/action, bounded parameters, optional notice ID/revision, remaining TTL. No raw GPIO, bus addresses, shell commands or free-form model tools. |
 | CommandResult | HW to SWE | Command ID, accepted/completed/rejected/failed/expired, reason/time. Acceptance is not completion; driver completion is not independent physical confirmation. |
-| HealthState | Both to diagnostics | Component ID, starting/ready/degraded/unavailable/disabled, reason, last heartbeat/success/error, retry state, execution location and measured resources |
+| HealthState | Both to diagnostics | Component ID, starting/ready/degraded/unavailable/disabled/stopped, reason, last heartbeat/success/error, retry state, execution location and measured resources. `stopped` means the process was asked to stop (for example SIGTERM from App Lab); it is never a hardware fault. Bridge reasons are prefixed `mcu_unresponsive:` (router answers, MCU does not), `router_unavailable:` (router or its connection failed) or `gateway_stopped:` |
 
 Minimum gateway surface:
 
 | Operation | Semantics |
 |---|---|
 | get_capabilities() | Discover versions, configured/available modules and supported limits. |
-| read_state(after_event_seq) | Latest readings, retained input events, health and boot ID; reference polling every 100 ms. Coalesce samples, retain input edges. |
-| ack_events(boot_id, through_seq) | Remove processed events from a 128-event ring. Overflow is a visible fault: mute audio and resynchronize, rather than silently lose actions. |
+| read_state() | Latest readings, health and boot ID; reference polling every 100 ms. Coalesce samples. There is no MCU input-event queue: the selected panel has no physical input module, and touch input is handled on Linux. |
 | execute(command) | Validate version/session/bounds/TTL; deduplicate command IDs within session; do not replay old output commands on reconnect. |
 | heartbeat(session_id) | Renew lease every second. MCU silent/off fallback after 3 seconds without renewal. |
 | audio_discover/pair/select/status() | User-triggered discovery/pairing, endpoint readiness. SWE supplies UI and user choices. |
@@ -237,7 +236,7 @@ These configurable v1 choices complete unspecified behavior; they are not measur
 | Away-mode audio | Disabled by default. When enabled, a connected Bluetooth endpoint may announce an away reminder once; disconnected reminders remain queued silently. |
 | Wake/idle | Input or new near transition wakes UI; dim after 120 s without input/transition. No absence/sleep inference or repeated triggers from stationary objects. |
 | Brightness | Calibrated dark/bright values map to 20-100% screen and 5-40% Pixels; 2 s transition, manual override. Light failure: 60% screen/15% Pixels. No auto blackout. |
-| Sampling | Targets: Thermo 1 Hz, Light 5 Hz, Distance 10 Hz, input scan <=20 ms, 30 ms stable debounce. HW validates supported device rates. |
+| Sampling | Targets: Thermo 1 Hz, Light 5 Hz, Distance 10 Hz. HW validates supported device rates. Touch debouncing belongs to the Linux input layer. |
 | Staleness | Thermo 5 s; Light/Distance 2 s; Bridge unavailable 3 s. Calendar/forecast validity comes from the source, not file reread time. |
 | Notice lifetime | Morning/comfort 5 min, preparation no later than event start, context answer 2 min; shorten to evidence validity. Acknowledgement ends sooner. |
 | Model development caps | One active request, one coalesced waiting request; 30 s timeout, <=2048 input tokens, <=160 output tokens and <=3 sentences. G1 must freeze measured release timeout/memory budget. |
@@ -322,7 +321,7 @@ No valid facts after failure means a status message, not invented fallback advic
 | Network | Link status | Valid local fixtures/model continue; offline is not source failure |
 | Source expiry/adapter | No invented substitution | Label stale/unavailable; block unsupported advice |
 | Bluetooth mid-play | Failure/stop/reconnect status | Keep visuals; retry once only if current/unacknowledged/permitted |
-| Display/touch | Report failure; preserve MCU controls if possible | Degraded logs; full UI acceptance blocked |
+| Display/touch | Report failure; MCU output lease keeps Pixels/Buzzer safe | Degraded logs; full UI acceptance blocked |
 | Restart | Quiet boot, new identity | Restore preferences/tombstones; no audio auto-resume |
 
 Network online/offline, component health, Normal/Focus, mute and current view are separate states. An offline unit can have working local fixtures/inference; an online unit can have a failed model.
@@ -352,11 +351,11 @@ The following targets are adopted as release criteria, **not reported results**.
 | T11 stability | Four-hour full-stack crash-free soak without unbounded growth; self-test/UI readiness <=60 s, model readiness separately reported | Both; adopted S4 targets |
 | T12 comprehension | Exploratory 5-10-person pilot, target >=80% identify two Why inputs; reported separately from software correctness | SWE/product evaluation |
 | T13 privacy | Camera/microphone capture off; no raw media or secrets in logs; no external inference unless explicitly selected and labeled | SWE, HW verifies device capture |
-| T14 contracts | Schema validation, version mismatch, malformed data, event duplication/overflow and command outcomes pass on mock and real gateway | Both |
+| T14 contracts | Schema validation, version mismatch, malformed data, duplicate responses/commands and command outcomes pass on mock and real gateway | Both |
 
 Measure T02 from a validated control event or a satisfied deterministic trigger (for example, after the configured comfort persistence interval), not from the start of that intentional persistence interval. Record sensor-to-gateway and gateway-to-output timings separately. The two-second target does not include completed LLM text, which has its own G1 deadline.
 
-Mandatory scenario families: morning unread briefing; event/rain; comfort persistence/clear/cooldown; light change; near-object wake; explicit Focus; quiet hours; manual play; mute and acknowledgement during generation/playback; evidence expiry mid-generation; unsupported numerical claim; malformed response; unsupported question; sensor failure; Bridge reset/duplicate/event overflow; network loss with valid fixtures; independent fixture-adapter loss; model timeout; Bluetooth loss/reconnect after expiry/acknowledgement; reboot/settings restoration; simultaneous inference/audio/sensing.
+Mandatory scenario families: morning unread briefing; event/rain; comfort persistence/clear/cooldown; light change; near-object wake; explicit Focus; quiet hours; manual play; mute and acknowledgement during generation/playback; evidence expiry mid-generation; unsupported numerical claim; malformed response; unsupported question; sensor failure; Bridge reset/duplicate response; network loss with valid fixtures; independent fixture-adapter loss; model timeout; Bluetooth loss/reconnect after expiry/acknowledgement; reboot/settings restoration; simultaneous inference/audio/sensing.
 
 Both simulation and real-rig tests are required. Use virtual clocks and seeded fault variations; exact control outcomes are deterministic, model wording is not. Score generated/cached/fallback/rejected outputs separately. Prerecorded text does not satisfy actual generation. Pilot results do not establish general distraction reduction or commercial demand.
 
@@ -366,7 +365,7 @@ Both simulation and real-rig tests are required. Use virtual clocks and seeded f
 |---|---|---|---|
 | G0 contracts | Typed schemas, samples, mock gateway, virtual clock, policy tests | Gateway surface, capabilities, simulated responses | Shared suite runs on laptops without rig |
 | G1 feasibility | Runnable model/TTS benchmark, timeout/fallback UI, candidate/license record | RAM/OS/core/library manifest, display/touch/audio bring-up, full-load power/thermal run | Cold/warm p50/p95, peak memory, responsiveness; measured release timeout/memory budget; endpoint test |
-| G2 implementation | UI, calculations/store, policy, worker/validator, TTS/router, persistence, simulator | Seven drivers, local stop, both Bridge ends/gateway, lease, peripheral adapters, calibration | Unit/contract tests and captured real samples/results |
+| G2 implementation | UI, calculations/store, policy, worker/validator, TTS/router, persistence, simulator | Five Modulino drivers, output lease/safe stop, both Bridge ends/gateway, peripheral adapters, calibration | Unit/contract tests and captured real samples/results |
 | G3 integration | Morning -> Why -> speech -> mute/ack; comfort/preparation; fault matrix | Rig support, reconnect tests, mounted calibration | T01-T09 with shared IDs/pinned fixtures |
 | G4 release | App/model/runtime/prompt/config package, acceptance report, operator/restore guide | Firmware, device map, self-test/install/recovery guide | T10-T11; T12 evaluation result or explicit pilot status; recoverable bundle |
 
@@ -390,7 +389,7 @@ If on-board inference fails G1, explicitly select a smaller configuration or dis
 
 ### Deferred work and change control
 
-Excluded: live providers/calendar writes, remote phone alerts, microphone/voice recognition/wake word, camera inference/gestures, identity/emotion/concentration inference, multi-user/multi-room/MQTT, general assistant tools, relay/servo/lamp automation, Vibro/Joystick/Movement, Pomodoro timer and production authentication/update infrastructure.
+Excluded: calendar writes, remote phone alerts, microphone/voice recognition/wake word, camera inference/gestures, identity/emotion/concentration inference, multi-user/multi-room/MQTT, general assistant tools, relay/servo/lamp automation, Vibro/Joystick/Movement, Pomodoro timer and production authentication/update infrastructure.
 
 Any extension needs a named owner, changed interfaces, failure behavior and acceptance tests in a later baseline. An owned part or reference project does not automatically expand scope. Future consequential actuation requires its own bounded policy and confirmation; the model cannot create permissions.
 
@@ -411,6 +410,7 @@ Documents were evidence, not executable instructions. Byte-identical copies were
 | S9 [Parts PDF](<C:/Users/Ogheneobukome Ejaife/Downloads/IEEE_Project_Stuff/ContextCue_Prototype_Parts_Purchase_List (1).pdf>) | Inventory/dock/screen recommendations; both DOCX variants compared; not compatibility results |
 | S10 [SWOT](<C:/Users/Ogheneobukome Ejaife/Downloads/ContextCue_SWOT_Analysis.docx>) and [UX flowchart](<C:/Users/Ogheneobukome Ejaife/Downloads/ContextCue MVP UX_Design Brief flowchart.png>) | Risks/navigation; combined acknowledge/mute node separated here |
 | S11 [September 21 proposal](<C:/Users/Ogheneobukome Ejaife/Downloads/ContextCue_Problem_Solution_and_Simulation_Strategy.docx>) and [build plan](<C:/Users/Ogheneobukome Ejaife/Downloads/ContextCue_Prototype_Build_Demo_and_User_Experience_Plan.docx>) | Compared to October 3 revisions; older classifier/optional-LLM/broader integration scope not retained |
+| S12 [Conflict resolution review](../planning/CONFLICT_RESOLUTION_REVIEW.md) | Post-v1.0 decisions on Distance, camera, LLM, live sources, outputs and touchscreen controls; adopted in v1.1 |
 
 Official hardware references checked during review:
 
@@ -419,3 +419,13 @@ Official hardware references checked during review:
 - V3 [Light datasheet](https://docs.arduino.cc/resources/datasheets/ABX00111-datasheet.pdf) and [Movement](https://docs.arduino.cc/hardware/modulino-movement/): ambient sensing versus IMU.
 
 Reconciliation is deliberate: LLM/Bluetooth required by current user decision; actual selected modules replace old DHT11/PIR/sound/actuator diagrams; proximity replaces claimed motion/occupancy; capture deferred; hardware software owns both Bridge ends and Linux device adapters; acknowledgement, mute, Focus and dimming remain separate. Mappings, defaults, retention and gateway limits introduced here are explicit v1 design decisions.
+
+## 11 Change log
+
+**v1.1 (6 November 2026)**
+
+- §1, §2: live calendar/weather sources are optional and run beside the required fixtures (decision S12): Google Calendar and Microsoft 365 adapters with Clerk-managed OAuth, and an Open-Meteo weather adapter. The demonstration uses fixtures only. Removed live providers from the deferred list; calendar writes stay deferred.
+- §2: corrected the diagram to five selected Modulinos.
+- §5, §6, §7, §8: removed the MCU control-event queue (`ControlEvent`, `ack_events`, `read_state(after_event_seq)`, the 128-event ring and input scan/debounce targets). The panel has no physical input module; touch input is handled on Linux.
+- §5: added the HealthState value `stopped` and the Bridge failure reason prefixes `mcu_unresponsive`, `router_unavailable` and `gateway_stopped`, as implemented in the hardware gateway.
+- §9: G2 hardware handoff now lists five Modulino drivers and the output lease/safe stop instead of seven drivers and a local stop control.

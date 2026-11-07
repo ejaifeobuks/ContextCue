@@ -54,9 +54,9 @@ Runtime state has clear ownership: NotificationService owns mute/Focus; ContextE
 | `checkFreshness()` | Determine whether each source remains valid for the intended use. |
 | `evaluateTriggers()` | Apply proximity, comfort, schedule, persistence and cooldown rules. |
 | `buildSnapshot()` | Create immutable evidence and calculated facts for a model request. |
-| `handleUserInput()` | Map input events or questions to the appropriate application action. |
+| `handleUserInput()` | Map touchscreen actions or typed questions to the appropriate application action. |
 
-**Relationships:** Uses HardwareGateway for readings, controls and health, and DataRepository for evidence/preferences. Requests advice from RecommendationService and submits eligible notices to NotificationService. Simulator supplies labeled test context.
+**Relationships:** Uses HardwareGateway for readings and health, and DataRepository for evidence/preferences. Requests advice from RecommendationService and submits eligible notices to NotificationService. Simulator supplies labeled test context.
 
 ## 3 RecommendationService
 

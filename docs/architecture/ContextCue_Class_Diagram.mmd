@@ -140,7 +140,7 @@ ContextEngine --> NotificationService : submits eligible notices
 ContextEngine --> DataRepository : context and preferences
 NotificationService --> DataRepository : acknowledgements and logs
 
-ContextEngine --> HardwareGateway : readings, controls, health
+ContextEngine --> HardwareGateway : readings and health
 NotificationService --> HardwareGateway : approved output requests
 
 HardwareGateway --> SensorController : acquires readings
