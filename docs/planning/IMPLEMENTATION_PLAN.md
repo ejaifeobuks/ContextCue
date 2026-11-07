@@ -42,7 +42,7 @@ with failure/recovery tests, and only then let application policy consume it.
 | On-board LLM (APP-06 to APP-08, G1) | Researched, not benchmarked | Findings below |
 | Speech (TTS) | Researched | Arduino's TTS Brick does not support the UNO Q |
 | Display/touch and Bluetooth (HW-02, HW-05) | Researched | Existing desktop stack identified; no speaker paired yet |
-| SWE application (ContextEngine, policy, UI, persistence, simulator) | Not started | Phases 9 and 10, unchanged |
+| SWE application (ContextEngine, policy, UI, persistence, simulator) | In progress (7 November) | `services/application` and `services/ui` implemented with fixture sources, factual fallback, simulated gateway and 73 tests; not yet run on the board. Model, TTS, live adapters and App Lab packaging remain |
 
 ## Platform findings (6 November 2026)
 

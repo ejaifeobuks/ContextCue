@@ -1,4 +1,71 @@
-# Application service — planned, not implemented
+# Application service
+
+**Status (7 November 2026): implemented for the fixture demo path, tested on a
+laptop, not yet run on the board.** Code is in `contextcue_app/`, tests in
+`tests/application/`. The UI that drives it is in [`services/ui`](../ui/).
+
+## What is implemented
+
+| Module | Class / role | Baseline |
+|---|---|---|
+| `engine.py` | ContextEngine: evidence store with material-change revisions, sensor normalization, comfort/proximity rules, calendar/weather loading, trigger evaluation, immutable `ContextSnapshot`s, evidence and obsolescence checks | APP-04, APP-05, APP-10, APP-11 |
+| `schedule.py` | Next event, count, urgency, merged busy time, all-day list, local day from the IANA zone (DST days are 23/25 h) | APP-04 |
+| `rules.py` | Comfort (60 s persistence, hysteresis, 15 min cooldown, stops on bad input), proximity (near <=500 mm, clear >650 mm, 500 ms, unknown is not far, wake only on clear to near), brightness (20-100% screen, 5-40% Pixels, 60/15% on Light failure, manual override) | APP-11, section 6 |
+| `notifications.py` | NotificationService: notice IDs before generation, dedupe keys, P0-P2 priority and tie-breaks, expiry, Focus deferral, mute, quiet hours, audio policy, long-idle and away rules, Buzzer opt-in, one audio retry, acknowledgement tombstones, Pixels pattern and chime commands through `execute()`, late-callback guard | APP-12 to APP-16 |
+| `repository.py` | DataRepository on stdlib `sqlite3`: migrations, transactions, settings, evidence, notices, tombstones, redacted diagnostics, 7-day retention, visible corruption recovery, clear-data | APP-17, section 8 |
+| `recommendation.py` | RecommendationService port: one active plus one coalesced request, deadline, cancellation, validator (schema, category, evidence IDs, every number checked against cited evidence), labeled factual fallback, `LlamaCppModel` client for the `arduino:llm` endpoint | APP-06 to APP-08 (port only) |
+| `sources.py` + `fixtures/demo_scenarios.json` | Adapter contract, `FixtureCalendarAdapter`, `FixtureWeatherAdapter`, four fictional dated scenarios; live choices report `disabled`, never fixture data | APP-05, APP-20 |
+| `clock.py` | Device clock and the labeled scenario clock (runs at real speed, can jump forward) | section 6 |
+| `dev_gateway.py` | `SimulatedGateway`: same surface and contract types as `HardwareGateway`, every sample labeled `simulated`; selected only with `--simulated` | APP-19 |
+| `app.py` | `ContextCueApp`: 100 ms control loop, 1 s slow tick (sources, triggers, expiry, lease heartbeat), view model and actions for the UI | APP-01, APP-18 |
+
+Run it with the UI: `python3 services/ui/main.py --simulated` (see the UI
+README). Run the tests: `python3 -m unittest discover -s tests -v`.
+
+## Decisions made while implementing
+
+- **App contracts live in `contextcue_app/contracts.py`** (`ContextEvent`,
+  `ContextSnapshot`, `ModelResponse`, `Notice`, `SourceResult`). Hardware
+  contracts were not touched. Move them into `contextcue_contracts` once the
+  AI service is a second app that needs to import them.
+- **Fixture data always runs on the scenario clock**, labeled "Scenario time
+  (simulated)". Sensor timestamps stay on the device clock, so sensor
+  freshness comes from the gateway's `quality`, and only calendar/weather
+  validity is compared with scenario time.
+- **No model is configured by default.** Every request ends as
+  `error: model_not_configured` and the notice shows a labeled factual
+  fallback. That is the required failure behavior and does not count as
+  generation (T03). Pass `--model-url http://127.0.0.1:9999/v1` once the G1
+  benchmark picks a model.
+- **No TTS engine yet** (`NullSpeech`). Speech routes report
+  `no_tts_engine_selected`; volume is saved but reported as not applied.
+- **Preparation cues** fire for the next valid event within 30 min (P1, P2
+  within 10 min) and mention rain only at >=50%. They expire at event start.
+  No travel time is invented.
+- **Morning briefing** is requested by a confirmed clear to near transition
+  inside the morning window, at most once per local date (dedupe key
+  `morning:<date>`, restored from the database after a restart).
+  "Brief me now" is always available.
+- **Bounded questions** are four fixed buttons (no on-screen keyboard on the
+  board). Anything else is rejected, and a question without valid data gets a
+  "Can't answer from current data" status, never invented text.
+- **Light references** (`light_dark_lux` 10, `light_bright_lux` 400) are
+  uncalibrated placeholders until plan section C.
+
+## Still open (not in this change)
+
+- Real generation: G1 benchmark, model choice, prompt tuning (AI service).
+- TTS engine and Bluetooth playback adapter (`SpeechPort`), volume applied
+  through PipeWire (peripherals service, plan section D).
+- Google / Microsoft 365 (Clerk) and Open-Meteo adapters.
+- Packaging as an App Lab app (see the UI README) and the board run.
+- Product decisions listed in the plan: long-idle interval (600 s default
+  here), away-mode grace, return summary, important-repeat count.
+
+---
+
+*Original planning notes below.*
+
 
 The single application backend (baseline §1: one node, no microservices). Owns
 the SWE domain classes:

@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=1024, height=600, initial-scale=1, user-scalable=no">
+  <title>ContextCue</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="frame">
+    <header id="topbar">
+      <div class="clock">
+        <div id="time" class="time">--:--</div>
+        <div class="clock-meta">
+          <div id="date">Loading</div>
+          <div id="clock-label" class="tag"></div>
+        </div>
+      </div>
+      <div class="chips">
+        <button id="chip-focus" class="chip" data-action="toggle-focus" aria-pressed="false">Normal</button>
+        <button id="chip-mute" class="chip" data-action="toggle-mute" aria-pressed="false">Sound on</button>
+        <span id="chip-audio" class="chip static"></span>
+        <button id="chip-health" class="chip" data-view="health"></button>
+      </div>
+    </header>
+
+    <main id="views">
+      <!-- Glance -->
+      <section id="view-glance" class="view active" aria-label="Glance">
+        <div id="notice-slot"></div>
+        <div class="cards">
+          <article class="card" id="card-schedule">
+            <h2><span class="kind">Calendar</span><span id="sched-tag" class="tag"></span></h2>
+            <div id="sched-body"></div>
+          </article>
+          <article class="card" id="card-indoor">
+            <h2><span class="kind">Indoor</span><span class="sub">measured by sensors</span></h2>
+            <div id="indoor-body" class="readings"></div>
+          </article>
+          <article class="card" id="card-forecast">
+            <h2><span class="kind">Outdoor</span><span id="wx-tag" class="tag"></span></h2>
+            <div id="wx-body"></div>
+          </article>
+        </div>
+      </section>
+
+      <!-- Briefing / Alert -->
+      <section id="view-briefing" class="view" aria-label="Briefing">
+        <div class="split">
+          <div class="pane">
+            <h1>Ask ContextCue</h1>
+            <p class="hint">Answers use only current data. Unsupported questions are not answered.</p>
+            <button class="big primary" data-action="briefing">Brief me now</button>
+            <div id="questions" class="question-grid"></div>
+          </div>
+          <div class="pane">
+            <h1>Notices</h1>
+            <div id="notice-list" class="list"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Why -->
+      <section id="view-why" class="view" aria-label="Why">
+        <div id="why-body"></div>
+      </section>
+
+      <!-- Settings / Focus -->
+      <section id="view-settings" class="view" aria-label="Settings">
+        <div id="settings-body" class="settings"></div>
+      </section>
+
+      <!-- Audio -->
+      <section id="view-audio" class="view" aria-label="Audio">
+        <div id="audio-body" class="settings"></div>
+      </section>
+
+      <!-- Health -->
+      <section id="view-health" class="view" aria-label="Health">
+        <div class="split">
+          <div class="pane"><h1>Components</h1><div id="health-list" class="list"></div></div>
+          <div class="pane"><h1>Recent activity</h1><div id="diag-list" class="list mono"></div></div>
+        </div>
+      </section>
+
+      <!-- Simulation -->
+      <section id="view-simulation" class="view" aria-label="Simulation">
+        <div id="sim-body" class="settings"></div>
+      </section>
+    </main>
+
+    <nav id="nav" aria-label="Views">
+      <button data-view="glance" class="active">Glance</button>
+      <button data-view="briefing">Ask</button>
+      <button data-view="why">Why</button>
+      <button data-view="settings">Settings</button>
+      <button data-view="audio">Audio</button>
+      <button data-view="health">Health</button>
+      <button data-view="simulation">Simulation</button>
+    </nav>
+
+    <div id="toast" role="status" aria-live="polite"></div>
+    <div id="offline" hidden>Lost connection to the ContextCue app. Retrying…</div>
+    <div id="dim" aria-hidden="true"></div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

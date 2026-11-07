@@ -250,13 +250,15 @@ Arduino ships its bricks).
 apps/
   contextcue-hardware/   App Lab app: HardwareGateway (Linux) + SensorController (MCU)
     app.yaml  python/  sketch/
-services/                planned components, not yet implemented
-  application/           ContextEngine, NotificationService, DataRepository
+services/                SWE components (application and ui implemented, rest planned)
+  application/           ContextEngine, NotificationService, DataRepository (implemented)
   ai/                    RecommendationService / LLM worker
-  ui/                    UserInterface
+  ui/                    UserInterface kiosk + app entry point (implemented)
   peripherals/           PeripheralAdapter: display, touch, Bluetooth
   simulator/             Simulator and labeled fixtures
 tests/hardware/          Gateway and firmware regression tests for contextcue-hardware
+tests/application/       Application policy, persistence and end-to-end scenario tests
+tests/ui/                UI server contract tests
 docs/                    Architecture, requirements, background, planning
 ```
 
@@ -304,6 +306,7 @@ standard library:
 ```bash
 python3 -m unittest discover -s tests -v
 python3 apps/contextcue-hardware/python/main.py --help
+python3 services/ui/main.py --simulated   # app + kiosk UI on http://127.0.0.1:7000
 ```
 
 VS Code's **Run Task** menu includes:

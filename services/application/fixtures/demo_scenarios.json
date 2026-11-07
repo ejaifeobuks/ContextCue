@@ -1,0 +1,61 @@
+{
+  "schema_version": "1.0",
+  "label": "Fictional demo data. Not a real calendar or forecast.",
+  "time_zone": "America/Chicago",
+  "calendar": {
+    "source_id": "fixture-calendar-demo-v1",
+    "label": "Fictional demo calendar",
+    "observed_at": "2026-11-16T12:00:00Z",
+    "valid_until": "2026-11-17T06:00:00Z",
+    "events": [
+      {"event_id": "evt-standup", "title": "Team stand-up", "start": "2026-11-16T15:00:00Z", "end": "2026-11-16T15:15:00Z"},
+      {"event_id": "evt-review", "title": "Design review", "start": "2026-11-16T16:00:00Z", "end": "2026-11-16T17:00:00Z", "location": "Room 204 (fictional)"},
+      {"event_id": "evt-lab", "title": "Lab hours", "start": "2026-11-16T16:30:00Z", "end": "2026-11-16T18:00:00Z"},
+      {"event_id": "evt-office", "title": "Office hours", "start": "2026-11-16T19:00:00Z", "end": "2026-11-16T20:00:00Z", "status": "cancelled"},
+      {"event_id": "evt-study", "title": "Study group", "start": "2026-11-16T21:00:00Z", "end": "2026-11-16T22:00:00Z"},
+      {"event_id": "evt-demo-day", "title": "Demo day", "start": "2026-11-16", "end": "2026-11-17", "all_day": true}
+    ]
+  },
+  "weather": {
+    "source_id": "fixture-weather-demo-v1",
+    "label": "Fictional demo forecast",
+    "location": "Demo City (fictional)",
+    "observed_at": "2026-11-16T12:30:00Z",
+    "valid_until": "2026-11-17T00:00:00Z",
+    "periods": [
+      {"period_id": "wx-0609", "start": "2026-11-16T12:00:00Z", "end": "2026-11-16T15:00:00Z", "condition": "cloudy", "precipitation_probability": 10, "temperature_c": 8},
+      {"period_id": "wx-0912", "start": "2026-11-16T15:00:00Z", "end": "2026-11-16T18:00:00Z", "condition": "rainy", "precipitation_probability": 70, "temperature_c": 10},
+      {"period_id": "wx-1218", "start": "2026-11-16T18:00:00Z", "end": "2026-11-17T00:00:00Z", "condition": "cloudy", "precipitation_probability": 30, "temperature_c": 13}
+    ]
+  },
+  "scenarios": [
+    {
+      "scenario_id": "morning",
+      "title": "Morning briefing",
+      "description": "07:45 on the demo day. Tap Approach to wake the screen and request the unread morning briefing.",
+      "start": "2026-11-16T13:45:00Z",
+      "sensors": {"temperature": 22.5, "humidity": 45, "lux": 180, "distance_mm": 900}
+    },
+    {
+      "scenario_id": "event_rain",
+      "title": "Event with rain",
+      "description": "09:38 on the demo day. Design review at 10:00 with a 70% rain forecast; it becomes urgent at 09:50.",
+      "start": "2026-11-16T15:38:00Z",
+      "sensors": {"temperature": 23.0, "humidity": 50, "lux": 320, "distance_mm": 420}
+    },
+    {
+      "scenario_id": "comfort",
+      "title": "Warm room",
+      "description": "13:20 on the demo day. The room reads 27.4 degC; a comfort cue appears after 60 s of persistence.",
+      "start": "2026-11-16T19:20:00Z",
+      "sensors": {"temperature": 27.4, "humidity": 48, "lux": 260, "distance_mm": 450}
+    },
+    {
+      "scenario_id": "quiet_hours",
+      "title": "Quiet hours",
+      "description": "22:30 on the demo day. Visual cues only: no automatic speech or Buzzer during quiet hours.",
+      "start": "2026-11-17T04:30:00Z",
+      "sensors": {"temperature": 27.0, "humidity": 40, "lux": 15, "distance_mm": 450}
+    }
+  ]
+}

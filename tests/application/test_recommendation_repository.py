@@ -1,0 +1,278 @@
+"""APP-06 to APP-08 validation/fallback/queue, and DataRepository (section 8)."""
+
+import asyncio
+import sqlite3
+import sys
+import tempfile
+import unittest
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import support  # noqa: E402,F401
+
+from contextcue_app.contracts import ContextEvent, ContextSnapshot, ModelResponse  # noqa: E402
+from contextcue_app.recommendation import (RecommendationService, factual_fallback,  # noqa: E402
+                                           validate_response)
+from contextcue_app.repository import DataRepository  # noqa: E402
+from contextcue_app.settings import Settings  # noqa: E402
+
+NOW = datetime(2026, 11, 16, 15, 38, tzinfo=timezone.utc)
+
+
+def evidence(eid, metric, value, quality="valid", unit=None):
+    return ContextEvent(eid, 1, "src", "sensor", metric, value, unit, None, None, None, None,
+                        "simulated", quality, "test", "Test")
+
+
+def snapshot(category="comfort", ev=None, facts=None, question=None, request_id="r1"):
+    ev = ev if ev is not None else (
+        evidence("sensor.temperature", "temperature", 27.4, unit="degC"),
+        evidence("pref.temperature_range", "preferred_temperature_range", [20.0, 26.0]),
+        evidence("derived.comfort.hot", "comfort_hot", "sustained_above_preferred_temperature"))
+    return ContextSnapshot(request_id, "s1", 1, category, "test", tuple(ev), facts or {"condition": "hot"},
+                           {}, "normal", "visual_only", "x", "y", question)
+
+
+def response(text, ids=("sensor.temperature",), category="comfort", request_id="r1"):
+    return ModelResponse(request_id, "s1", category, text, tuple(ids))
+
+
+class ValidationTests(unittest.TestCase):
+    def test_accepts_supported_numbers(self):
+        snap = snapshot()
+        ok = response("It is 27.4 degC, above your 26 degC limit.",
+                      ("sensor.temperature", "pref.temperature_range"))
+        self.assertIsNone(validate_response(ok, snap))
+
+    def test_rejections(self):
+        snap = snapshot()
+        cases = {
+            "unsupported_number:31": response("It is 31 degC."),
+            "unknown_or_invalid_evidence": response("Warm.", ("sensor.humidity",)),
+            "no_evidence": response("Warm.", ()),
+            "wrong_category": response("Warm.", category="morning"),
+            "wrong_request": response("Warm.", request_id="other"),
+            "empty_text": response("   "),
+            "too_long": response("One. Two. Three. Four."),
+        }
+        for reason, resp in cases.items():
+            with self.subTest(reason=reason):
+                self.assertEqual(validate_response(resp, snap), reason)
+
+    def test_invalid_evidence_cannot_be_cited(self):
+        snap = snapshot(ev=(evidence("sensor.temperature", "temperature", None, quality="stale"),))
+        self.assertEqual(validate_response(response("Warm."), snap), "unknown_or_invalid_evidence")
+
+
+class FallbackTests(unittest.TestCase):
+    def test_comfort_fallback_cites_inputs(self):
+        fb = factual_fallback(snapshot())
+        self.assertIn("27.4 °C", fb.text)
+        self.assertIn("20-26", fb.text)
+        self.assertEqual(set(fb.evidence_ids), {"sensor.temperature", "pref.temperature_range"})
+
+    def test_no_valid_facts_means_no_fallback(self):
+        snap = snapshot(ev=(evidence("sensor.temperature", "temperature", None, quality="unavailable"),))
+        self.assertIsNone(factual_fallback(snap))
+
+    def test_unsupported_question_has_no_answer(self):
+        snap = snapshot(category="context_answer", ev=(), question="stock_price")
+        self.assertIsNone(factual_fallback(snap))
+
+
+class SlowModel:
+    execution_location = "test"
+    model_version = "fake"
+
+    def __init__(self, delay=0.05, text="It is 27.4 degC."):
+        self.delay = delay
+        self.text = text
+        self.calls = []
+
+    async def complete(self, snap):
+        self.calls.append(snap.request_id)
+        await asyncio.sleep(self.delay)
+        return ModelResponse(snap.request_id, snap.snapshot_id, snap.category, self.text,
+                             ("sensor.temperature",))
+
+
+class ServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def run_service(self, model, timeout=1.0):
+        svc = RecommendationService(model, now=lambda: NOW, timeout_s=timeout)
+        results = []
+
+        async def collect(r):
+            results.append(r)
+        svc.on_result(collect)
+        return svc, results
+
+    async def test_generated_and_validated(self):
+        svc, results = await self.run_service(SlowModel(0.01))
+        svc.submit(snapshot())
+        await asyncio.sleep(0.05)
+        self.assertEqual(results[0].outcome, "generated")
+
+    async def test_timeout(self):
+        svc, results = await self.run_service(SlowModel(0.5), timeout=0.05)
+        svc.submit(snapshot())
+        await asyncio.sleep(0.15)
+        self.assertEqual(results[0].outcome, "timed_out")
+
+    async def test_rejects_unsupported_output(self):
+        svc, results = await self.run_service(SlowModel(0.01, text="It is 35 degC."))
+        svc.submit(snapshot())
+        await asyncio.sleep(0.05)
+        self.assertEqual((results[0].outcome, results[0].reason), ("rejected", "unsupported_number:35"))
+        self.assertIsNone(results[0].response)
+
+    async def test_one_active_one_coalesced_waiting(self):
+        model = SlowModel(0.05)
+        svc, results = await self.run_service(model)
+        svc.submit(snapshot(request_id="a"))
+        svc.submit(snapshot(request_id="b"))
+        svc.submit(snapshot(request_id="c"))  # replaces b
+        await asyncio.sleep(0.2)
+        self.assertEqual(model.calls, ["a", "c"])
+        outcomes = {r.snapshot.request_id: r.outcome for r in results}
+        self.assertEqual(outcomes, {"a": "generated", "b": "cancelled", "c": "generated"})
+
+    async def test_cancel_discards_late_result(self):
+        model = SlowModel(0.05)
+        svc, results = await self.run_service(model)
+        svc.submit(snapshot(request_id="a"))
+        await asyncio.sleep(0.01)
+        svc.cancel("a")
+        await asyncio.sleep(0.1)
+        self.assertEqual(results[0].outcome, "cancelled")
+        self.assertIsNone(results[0].response)
+
+
+class LlamaClientTests(unittest.IsolatedAsyncioTestCase):
+    """LlamaCppModel against a local stand-in for the OpenAI-compatible endpoint."""
+
+    async def asyncSetUp(self):
+        import json
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        self.requests = []
+        test = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                test.requests.append((self.path, body))
+                content = test.reply
+                data = json.dumps({"choices": [{"message": {"content": content}}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        self.httpd = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}/v1"
+
+    async def asyncTearDown(self):
+        await asyncio.to_thread(self.httpd.shutdown)
+        self.httpd.server_close()
+
+    async def test_generated_response_is_parsed_and_validated(self):
+        from contextcue_app.recommendation import LlamaCppModel
+        self.reply = ('{"category": "comfort", "text": "It is 27.4 degC in here.", '
+                      '"evidence_ids": ["sensor.temperature"]}')
+        model = LlamaCppModel(self.url, "qwen-test", timeout_s=2)
+        snap = snapshot()
+        response = await model.complete(snap)
+        self.assertIsNone(validate_response(response, snap))
+        path, body = self.requests[0]
+        self.assertEqual(path, "/v1/chat/completions")
+        self.assertEqual(body["max_tokens"], 160)
+        self.assertNotIn("tools", body)  # the model never gets hardware tools
+        self.assertIn("sensor.temperature", body["messages"][1]["content"])
+
+    async def test_malformed_output_is_an_error(self):
+        from contextcue_app.recommendation import LlamaCppModel
+        self.reply = "Sure! It is warm."
+        svc = RecommendationService(LlamaCppModel(self.url, timeout_s=2), now=lambda: NOW)
+        results = []
+
+        async def collect(r):
+            results.append(r)
+        svc.on_result(collect)
+        svc.submit(snapshot())
+        for _ in range(50):
+            await asyncio.sleep(0.02)
+            if results:
+                break
+        self.assertEqual((results[0].outcome, results[0].reason), ("error", "malformed_model_output"))
+
+    async def test_unreachable_endpoint_is_reported(self):
+        from contextcue_app.recommendation import LlamaCppModel, ModelUnavailable
+        model = LlamaCppModel("http://127.0.0.1:9/v1", timeout_s=1)
+        with self.assertRaises(ModelUnavailable):
+            await model.complete(snapshot())
+
+
+class RepositoryTests(unittest.TestCase):
+    def test_settings_roundtrip_and_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cc.db"
+            repo = DataRepository(path)
+            self.assertEqual(repo.restore_settings(), (Settings(), None))
+            repo.save_settings(Settings().updated({"audio_policy": "on_request", "focus": True}), NOW)
+            repo.close()
+            repo = DataRepository(path)
+            self.addCleanup(repo.close)
+            restored, problem = repo.restore_settings()
+            self.assertIsNone(problem)
+            self.assertEqual((restored.audio_policy, restored.focus), ("on_request", True))
+
+    def test_corrupt_database_is_kept_and_replaced(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cc.db"
+            path.write_bytes(b"this is not a sqlite database" * 100)
+            repo = DataRepository(path)
+            self.addCleanup(repo.close)
+            self.assertIsNotNone(repo.recovered_from)
+            self.assertEqual(len(list(Path(tmp).glob("cc.corrupt-*"))), 1)
+            repo.save_settings(Settings(), NOW)
+
+    def test_newer_schema_refused_visibly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cc.db"
+            DataRepository(path).close()
+            db = sqlite3.connect(path)
+            db.execute("UPDATE meta SET value='99' WHERE key='schema_version'")
+            db.commit()
+            db.close()
+            repo = DataRepository(path)
+            self.addCleanup(repo.close)
+            self.assertIn("newer", repo.recovered_from)
+
+    def test_retention_and_redaction(self):
+        repo = DataRepository()
+        self.addCleanup(repo.close)
+        repo.write_diagnostic("old", {"x": 1}, NOW - timedelta(days=8))
+        repo.write_diagnostic("new", {"api_token": "secret-value", "nested": {"password": "p"}}, NOW)
+        repo.remove_expired_data(NOW)
+        diags = repo.diagnostics()
+        self.assertEqual([d["kind"] for d in diags], ["new"])
+        self.assertEqual(diags[0]["api_token"], "[redacted]")
+        self.assertEqual(diags[0]["nested"]["password"], "[redacted]")
+
+    def test_acknowledgement_is_transactional_tombstone(self):
+        repo = DataRepository()
+        self.addCleanup(repo.close)
+        notice = {"notice_id": "n1", "dedupe_key": "k", "revision": 2, "lifecycle": "acknowledged",
+                  "created_at": "2026-11-16T15:38:00.000Z"}
+        repo.save_acknowledgement(notice, "acknowledged", NOW)
+        self.assertEqual(repo.tombstones()["k"]["notice_id"], "n1")
+        self.assertEqual(repo.recent_notices()[0]["lifecycle"], "acknowledged")
+
+
+if __name__ == "__main__":
+    unittest.main()

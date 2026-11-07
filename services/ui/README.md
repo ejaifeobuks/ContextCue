@@ -1,4 +1,67 @@
-# UI service — planned, not implemented
+# UI service
+
+**Status (7 November 2026): implemented and tested on a laptop against the
+simulated gateway; not yet shown on the Waveshare panel.**
+
+## Run it
+
+```bash
+# Laptop, no board needed (simulated gateway, labeled everywhere):
+python3 services/ui/main.py --simulated --scenario morning
+# open http://127.0.0.1:7000
+
+# UNO Q Linux side, real HardwareGateway (needs the router and Bridge):
+python3 services/ui/main.py --host 0.0.0.0
+chromium --kiosk http://127.0.0.1:7000
+
+# Options: --scenario morning|event_rain|comfort|quiet_hours, --port,
+#          --db PATH (default ~/.contextcue/contextcue.db),
+#          --model-url http://127.0.0.1:9999/v1 (arduino:llm endpoint)
+```
+
+Only the Python standard library is used (3.10+). `zoneinfo` needs the
+`tzdata` package on Windows; WSL and the board already have zone data.
+
+## What is implemented
+
+- `main.py` starts `ContextCueApp` (services/application) on one asyncio loop
+  and the HTTP server in a thread; every UI call is scheduled onto the app
+  loop, so the UI never blocks sensing or generation (APP-07).
+- `contextcue_ui/server.py`: static `assets/` plus `GET /api/state` (view
+  model) and `POST /api/action` (`{"action", "payload"}`). Errors come back as
+  400 with a readable message; path traversal is refused.
+- `assets/`: plain HTML/CSS/JS, no build step, laid out for 1024x600 with
+  touch targets of at least 44 px. The page polls every 500 ms.
+
+| View | Content |
+|---|---|
+| Glance | Time with a scenario/device clock label, Normal/Focus and Mute chips, audio policy, health summary, one highest-priority notice (Why, Play, Done), calendar, indoor readings, outdoor forecast |
+| Ask (Briefing) | "Brief me now", four bounded questions, list of notices with lifecycle and origin |
+| Why | Text origin, model request outcome and location, validation, priority, times, and every evidence input with value, unit, source ID, observed time, validity, real/simulated and freshness at use and now |
+| Settings / Focus | Focus, Focus speech exception, morning and quiet windows, comfort ranges, units, zone, brightness, sources, clear data |
+| Audio | Engine, speaker, paired / connected / ready shown separately, mute, volume, policy, Buzzer opt-in, away announcements, stop |
+| Health | Each component's state and reason exactly as reported (`mcu_unresponsive`, `distance_timeout` ...), recent diagnostics |
+| Simulation | Scenario picker and time jumps; with `--simulated`, sensor sliders, Approach/Leave and fault switches. On real hardware only scenario time is offered; sensors are never faked |
+
+Every state is written as text (Simulated, Stale, Unavailable, Factual
+fallback ...), so nothing depends on color alone. Dimming is a CSS overlay
+because the panel has no Linux backlight control.
+
+## Still open
+
+- **App Lab packaging.** App Lab apps must be self-contained. To ship this
+  as an app: create `apps/contextcue/` with `app.yaml`, copy or package
+  `contextcue_app`, `contextcue_ui` and `contextcue_contracts`, and point
+  `python/main.py` at `services/ui/main.py`'s `main()`. Declaring
+  `arduino:web_ui` is optional: this server already serves port 7000, but
+  App Lab's webview display needs the Brick, so check that on the board.
+- Board checks from plan section D: full screen, touch orientation, kiosk
+  autostart, screen blanking off.
+
+---
+
+*Original planning notes below.*
+
 
 Owns **UserInterface** (SWE): the kiosk touch UI with Glance/Dashboard,
 Briefing/Alert, Why, Settings/Focus, Audio, Health and Simulation views
