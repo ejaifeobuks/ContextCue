@@ -1,14 +1,21 @@
-# ContextCue Remaining Modules Implementation Plan
+# ContextCue Implementation Plan
 
-## Purpose
+Version 2 | 6 November 2026 | Replaces the 25 October remaining-modules plan
 
-This plan describes how to implement the ContextCue modules that are not yet
-complete. The current milestone supports the real Modulino Thermo sensor,
-Arduino Bridge communication, and the Linux hardware gateway. The remaining
-work should extend those foundations without treating unsupported hardware as
-available.
+## Purpose and authority
 
-The main implementation boundary is:
+This plan tracks what is built, what remains, and how the remaining work will
+reuse Arduino's existing UNO Q software before anything is written from
+scratch. The [software baseline v1.1](../requirements/ContextCue_Software_Baseline_v1.md)
+remains the authority for behavior, thresholds and acceptance; the
+[conflict resolution review](CONFLICT_RESOLUTION_REVIEW.md) records the
+decisions the baseline adopted.
+
+The demonstration target is **16 November 2026**. Work is ordered so that the
+items most likely to force a change of plan (on-board LLM, speech, Bluetooth)
+are measured first.
+
+The implementation boundary is unchanged:
 
 ```text
 MCU modules
@@ -18,676 +25,271 @@ MCU modules
   -> UI, notifications, and audio
 ```
 
-The existing Thermo implementation is in
-`apps/contextcue-hardware/sketch/src/sensors/SensorController.cpp`. The firmware entry point
-is `apps/contextcue-hardware/sketch/sketch.ino`, and the Linux gateway is
-`apps/contextcue-hardware/python/contextcue_hardware/gateway.py`.
-
-## Final plan review status
-
-This plan review does not implement source code. Development may begin only
-after the readiness gates in this document are satisfied. The current Thermo
-path is ready for incremental extension; Light, Distance, Pixels, Buzzer,
-touchscreen, Bluetooth audio, live providers, and the local LLM remain
-implementation work.
-
-The plan must be executed in thin vertical slices:
-
-1. Prove one hardware device with the official Arduino example/API.
-2. Integrate that device into the MCU cached-state contract.
-3. Decode it on Linux and prove failure/recovery behavior.
-4. Only then allow application policy to consume it.
-
-No application behavior may depend on a module that has not passed its
-physical bring-up gate.
-
-## Official Arduino reuse findings
-
-Before writing device drivers, reuse the pinned `Arduino_Modulino` library and
-its official examples. The library already supplies the required device
-abstractions over I2C:
-
-- **Thermo:** existing project code uses `Modulino.begin(Wire1)` and the
-  library's Thermo API.
-- **Light:** Arduino's official `Light_Basic` example uses
-  `ModulinoLight`, `light.begin()`, `light.update()`, `getAL()` for ambient
-  light in lux, and `getIR()` for infrared. Use `getAL()` for the first
-  ContextCue metric; do not reimplement the optical sensor protocol.
-- **Distance:** the official `Distance_Basic` example uses
-  `ModulinoDistance`, `distance.begin()`, `distance.available()`, and
-  `distance.get()` in millimeters. Preserve the `available()` check and map
-  invalid/`NaN` results to the project quality contract.
-- **Pixels:** the official Pixels API provides `set(index, color, brightness)`,
-  `clear()`, and `show()` for eight RGB LEDs. Build ContextCue patterns on
-  these calls rather than accessing the LED controller directly.
-- **Buzzer:** the official Buzzer API provides `tone(frequency, duration)` and
-  `noTone()`. The project must wrap these calls with its own duration,
-  session, lease, mute, and duplicate-command limits.
-
-References to pin and verify during implementation:
-
-- [Arduino Modulino library API](https://github.com/arduino-libraries/Arduino_Modulino/blob/main/docs/api.md)
-- [Light Basic example](https://github.com/arduino-libraries/Arduino_Modulino/blob/main/examples/Modulino_Light/Light_Basic/Light_Basic.ino)
-- [Distance Basic example](https://github.com/arduino-libraries/Arduino_Modulino/blob/main/examples/Modulino_Distance/Distance_Basic/Distance_Basic.ino)
-- [Pixels Basic example](https://github.com/arduino-libraries/Arduino_Modulino/blob/main/examples/Modulino_Pixels/Pixels_Basic/Pixels_Basic.ino)
-- [Buzzer Basic example](https://github.com/arduino-libraries/Arduino_Modulino/blob/main/examples/Modulino_Buzzer/Buzzer_Basic/Buzzer_Basic.ino)
-- [Modulino Light documentation](https://docs.arduino.cc/hardware/modulino-light/)
-- [Modulino Distance documentation](https://docs.arduino.cc/hardware/modulino-distance/)
-
-The exact library commit/version must be pinned in `sketch/sketch.yaml` and
-recorded in the bring-up report. If the installed version differs from these
-references, stop and re-check method names, units, range behavior, and
-examples before coding against it.
-
-## Resolved product decisions
-
-- Use the **Distance** module, not a motion sensor, for proximity.
-- Distance may wake the UI and provide a routing hint, but it must not infer
-  identity, occupancy, attention, sleep, or absence.
-- Use **LLM-generated briefings** as the intended recommendation behavior.
-- Keep deterministic templates as a clearly labeled fallback when generation
-  fails; fallback text does not count as successful LLM acceptance.
-- Support fixed/demo and live calendar sources side by side.
-- Initially support live calendar providers through separate adapters for
-  Google Calendar and Microsoft 365 / Outlook Calendar.
-- Use fixed/demo sources for the Qualcomm demonstration.
-- Use Pixels and Buzzer as the selected outputs; do not add a separate demo
-  light to the required product path.
-- Do not include a physical Knob; use the touchscreen for speech-volume
-  control and the active notice's Why view.
-- Require confirmed, allowlisted, bounded output commands.
-- Suppress automatic speech and Buzzer output when Distance is clear and the
-  device has remained idle for the configured long-idle interval, or when
-  automatic Buzzer output is suppressed. Keep the notification visual and
-  allow explicit playback when otherwise eligible.
-- When the user appears away, announce a reminder at most once only if
-  away-mode audio is explicitly enabled and Bluetooth is connected.
-- When Bluetooth is disconnected, queue ordinary reminders silently and show
-  a summary when the user returns.
-- Do not repeat unanswered reminders indefinitely. Only reminders explicitly
-  marked important may use a bounded repeat policy.
-- Do Not Disturb suppresses ordinary sounds and collects reminders for later.
-- Keep camera gestures as a stretch feature, limited to acknowledging a notice,
-  disabled by default, and outside the core acceptance path.
-
-The following decisions remain open and must not be hidden inside irreversible
-interfaces:
-
-- The exact long-idle interval and the behavior for unknown Distance readings.
-- The exact local model, runtime, timeout, memory budget, and fallback format.
-- The final UNO Q Linux touchscreen device/API and display toolkit.
-- The Linux Bluetooth audio backend, endpoint identity model, and absolute
-  volume support.
-- The exact Clerk OAuth flow, provider scopes, token storage, and reauth UX.
-- Open-Meteo attribution, rate, terms, location-resolution, and caching policy.
-- The final Bridge response shape after measuring encoded size and latency.
-- Whether all five selected Modulinos can share the intended Qwiic topology
-  without address conflicts or power/throughput problems.
-- The long-idle timer, away-mode transition/grace period, return-summary
-  rules, and bounded important-reminder repeat count.
-
-## Guiding rules
-
-- Define shared contracts before adding new behavior.
-- Keep sensor acquisition separate from application interpretation.
-- Treat missing, stale, invalid, and unavailable values explicitly.
-- Use `null` for missing measurements; never use fabricated zero values.
-- Preserve boot IDs, sequence numbers, observation times, and receipt times.
-- Keep hardware reads in the MCU main loop, not inside Bridge RPC callbacks.
-- Do not advertise a module until it is implemented and verified.
-- Keep output commands bounded and allowlisted.
-- Validate real hardware behavior separately from unit-test behavior.
-- Do not infer units, ranges, timing, or availability from a product name;
-  verify them against the installed library, datasheet, and assembled board.
-- Pin every firmware/library/Python dependency before collecting acceptance
-  evidence.
-
-## Phase 0: Establish shared contracts
-
-### 0.1 Define stable module and metric IDs
-
-Use these module IDs:
-
-```text
-thermo
-light
-distance
-pixels
-buzzer
-```
-
-Keep module IDs separate from metric names. For example:
-
-```text
-module_id = "thermo", metric = "temperature"
-module_id = "thermo", metric = "humidity"
-module_id = "light", metric = "ambient_level"
-module_id = "distance", metric = "distance"
-```
-
-### 0.2 Reuse the common sensor contract
-
-All sensor readings should use the existing `SensorSample` structure in
-`apps/contextcue-hardware/python/contextcue_contracts/`.
-
-Each reading should retain:
-
-- Boot ID
-- Sequence number
-- Event ID
-- Module ID
-- Metric
-- Value
-- Unit
-- Observation uptime
-- Observation timestamp
-- Receipt timestamp
-- Clock quality
-- Source mode
-- Quality
-- Error reason
-
-### 0.3 Define common quality behavior
-
-Use the existing quality values:
-
-```text
-valid
-stale
-unavailable
-invalid
-```
-
-Rules:
-
-- Zero remains a valid value when the device supports it.
-- Invalid ranges are reported explicitly.
-- Every acquisition attempt receives a sequence number.
-- Repeated polling does not refresh an old observation timestamp.
-- A firmware reboot creates a new boot identity.
-
-### 0.4 Extend capability reporting
-
-Extend `HardwareCapabilities` to report, where supported:
-
-- Configured modules
-- Available modules
-- Units
-- Supported sampling rates
-- Driver and library versions
-- Output patterns and limits
-
-### 0.5 Freeze the build and hardware manifest
-
-Before adding the second module:
-
-1. Record the UNO Q board, Linux image, Zephyr/core version, RouterBridge,
-   RPClite, `Arduino_Modulino`, and sensor dependency versions.
-2. Keep the existing pins in `sketch/sketch.yaml` unless an upgrade is
-   justified by a failed requirement and revalidated.
-3. Record each module's exact product variant, I2C address, cable topology,
-   power state, and physical mounting position.
-4. Confirm the Qwiic bus used by the UNO Q is `Wire1`; do not assume the
-   Arduino UNO default `Wire` bus applies.
-5. Capture a clean baseline: compile, existing gateway tests, Thermo readings,
-   Bridge reconnect, and MCU reboot.
-
-The manifest is a prerequisite for all physical acceptance results. A test
-result without its board, firmware, library, and wiring identity is not
-reproducible.
-
-### 0.6 Prove the shared Qwiic topology
-
-Use the official library's initialization path and an instrumented bring-up
-sketch to verify that all selected modules can coexist. Record detected
-addresses, initialization order, bus errors, current draw if available, and
-whether any module requires a different startup delay. Resolve address
-collisions, cable/power limits, or unsupported combinations before
-implementing multi-module scheduling.
-
-## Phase 1: Refactor the MCU sensor layer
-
-The current `SensorController` owns Thermo only. Expand it while keeping each
-sensor's state and timing independent.
-
-### 1.1 Add independent reading state
-
-Add separate state for:
-
-```cpp
-ThermoReading thermoReading_;
-LightReading lightReading_;
-DistanceReading distanceReading_;
-```
-
-Each reading should contain:
-
-- Sequence number
-- Observation uptime
-- Value
-- Quality
-- Error
-- Availability state
-
-Do not use one shared sensor sequence for all modules. A Light failure should
-not make a valid Thermo sequence appear changed.
-
-### 1.2 Add independent schedules
-
-Use the project targets:
-
-| Module   | Target rate |
-| -------- | ----------: |
-| Thermo   |        1 Hz |
-| Light    |        5 Hz |
-| Distance |       10 Hz |
-
-Use separate due checks such as:
-
-```cpp
-readThermoIfDue(now);
-readLightIfDue(now);
-readDistanceIfDue(now);
-```
-
-### 1.3 Add initialization and recovery
-
-Each module needs:
-
-- Startup initialization
-- Reachability checks
-- Disconnect detection
-- Reconnect behavior
-- Named failure reasons
-
-Example errors:
-
-```text
-light_not_found
-light_disconnected
-light_read_failed
-light_out_of_range
-distance_not_found
-distance_disconnected
-distance_timeout
-distance_out_of_range
-```
-
-After a disconnect, old values must not remain marked valid.
-
-### 1.4 Keep drivers out of RPC callbacks
-
-Continue the existing design:
-
-- Hardware drivers run in the main loop.
-- RPC callbacks return cached readings.
-- RPC callbacks do not perform slow I2C operations.
-
-## Phase 2: Implement the Light module
-
-### 2.1 Verify the physical API first
-
-Before writing the driver:
-
-1. Confirm the physical Modulino Light model.
-2. Confirm the pinned Arduino library version and inspect the official
-   `Light_Basic` example.
-3. Use `ModulinoLight.begin()`, `update()`, and `getAL()` first.
-4. Confirm that the installed version returns ambient light in lux; otherwise
-   stop and revise the contract rather than relabeling raw data as lux.
-5. Verify the supported sampling rate and whether `update()` blocks.
-
-The project must not report lux until the raw-to-lux conversion is verified.
-
-### 2.2 Choose the first exposed value
-
-Preferred contract when verified:
-
-```text
-metric: ambient_light
-unit: lux
-```
-
-Safe initial contract when conversion is not verified:
-
-```text
-metric: ambient_level
-unit: normalized
-value: 0.0 to 1.0
-```
-
-### 2.3 Validate Light readings
-
-Validate:
-
-- Communication success
-- Numeric value
-- Expected lower and upper bounds
-- Calibration state
-- Sampling interval
-
-Invalid data should have a null value and a named reason, for example:
-
-```text
-quality: invalid
-error: light_out_of_range
-```
-
-### 2.4 Add calibration
-
-Support calibrated dark and bright references:
-
-```text
-dark_reference
-bright_reference
-```
-
-Normalize raw values between those references when appropriate. Report
-calibration failures instead of hiding them.
-
-### 2.5 Test Light behavior
-
-Cover:
-
-- Dark, bright, and intermediate readings
-- Zero values where valid
-- Out-of-range values
-- Disconnection
-- Reconnection
-- Staleness after two seconds
-- Duplicate sequence handling
-- Calibration behavior
-
-## Phase 3: Implement the Distance module
-
-### 3.1 Verify the physical ToF API
-
-Before implementation:
-
-1. Confirm the Modulino Distance model.
-2. Confirm the pinned library version and inspect the official
-   `Distance_Basic` example.
-3. Use `ModulinoDistance.begin()`, `available()`, and `get()`.
-4. Confirm how the installed version represents invalid readings, including
-   `NaN`, timeout, and no-new-sample cases.
-5. Measure the useful range and mounting effects on the assembled device.
-
-The project requires time-of-flight distance, not ultrasonic distance.
-
-### 3.2 Expose millimeters
-
-Use:
-
-```text
-module_id: distance
-metric: distance
-unit: mm
-```
-
-### 3.3 Define failure behavior
-
-Possible errors include:
-
-```text
-distance_not_found
-distance_disconnected
-distance_timeout
-distance_out_of_range
-distance_invalid
-```
-
-An out-of-range result must not be interpreted as “far away.” It is unknown.
-
-### 3.4 Keep proximity policy outside the sensor controller
-
-The MCU reports distance only. The application layer applies:
-
-- Near threshold: `<= 500 mm`
-- Clear threshold: `> 650 mm`
-- Near persistence: `500 ms`
-- Cooldown and wake behavior
-
-The sensor controller must not infer identity, occupancy, attention, or sleep.
-
-### 3.5 Test Distance behavior
-
-Cover:
-
-- Normal distances
-- Physically valid near distances
-- Timeouts
-- Out-of-range readings
-- Disconnect and reconnect
-- Near threshold
-- Clear threshold
-- Hysteresis
-- 500 ms persistence
-- Staleness after two seconds
-
-## Phase 4: Extend the MCU-to-Linux state protocol
-
-The current `cc_read` response only represents Thermo. Add Light and Distance
-without violating the compact transport limit.
-
-### 4.1 Evaluate response size
-
-First measure whether one response containing all three sensor groups fits
-within the current 224-byte limit.
-
-A possible structure is:
-
-```json
-{
-  "v": "1.0",
-  "boot": "...",
-  "thermo": { "seq": 7, "at": 11500, "q": "valid", "t": 24.2, "h": 45.0 },
-  "light": { "seq": 42, "at": 11900, "q": "valid", "v": 0.68 },
-  "distance": { "seq": 84, "at": 11950, "q": "valid", "mm": 430 }
-}
-```
-
-### 4.2 Choose a protocol shape based on measurement
-
-If the combined response is too large, use separate RPC calls or a compact
-array format. Do not silently increase the limit without confirming the
-Arduino Bridge and MessagePack constraints.
-
-Possible calls:
-
-```text
-cc_open
-cc_read_thermo
-cc_read_light
-cc_read_distance
-```
-
-### 4.3 Preserve independent sensor state
-
-A Light failure must not invalidate valid Thermo and Distance readings. Each
-sensor must have its own:
-
-- Sequence
-- Observation time
-- Quality
-- Error
-- Freshness state
-
-## Phase 5: Extend Python contracts and HardwareGateway
-
-### 5.1 Generalize decoding
-
-Decode each module independently using the existing strict validation style in
-`gateway.py`.
-
-Expected combinations include:
-
-```text
-thermo: valid
-light: unavailable
-distance: valid
-```
-
-One missing sensor must not make the entire gateway fail.
-
-### 5.2 Track freshness independently
-
-Use these limits:
-
-| Component        | Expiration |
-| ---------------- | ---------: |
-| Thermo           |  5 seconds |
-| Light            |  2 seconds |
-| Distance         |  2 seconds |
-| Bridge heartbeat |  3 seconds |
-
-Report health separately for:
-
-- Bridge
-- Thermo
-- Light
-- Distance
-
-### 5.3 Preserve existing safety checks
-
-For each module:
-
-- Reject sequence regressions.
-- Reject uptime regressions within one boot.
-- Reject content changes under the same sequence.
-- Reject invalid ranges.
-- Clear old state after a boot ID changes.
-- Keep observation time unchanged during duplicate polling.
-
-### 5.4 Advertise only implemented features
-
-For example:
-
-```python
-configured_modules = ("thermo", "light", "distance")
-available_modules = ("thermo",)
-```
-
-Once Light is implemented and detected, it can be added to
-`available_modules`.
-
-## Phase 6: Implement touchscreen controls
-
-Touchscreen controls run on the UNO Q Linux side and are the only user input
-surface in the selected hardware.
-
-The touchscreen should provide:
-
-- Speech-volume adjustment for the selected Bluetooth speaker or headphones.
-- Navigation to the active notice's Why view.
-- Touch equivalents for acknowledgement, mute, and Focus.
-
-Volume changes belong to the Linux audio layer, not the MCU. Keep volume
-bounded from 0% through 100%, apply the selected endpoint's supported volume
-operation, and report unsupported or failed changes explicitly.
-
-Touch input must be debounced by the Linux input layer, produce explicit
-acknowledgement, mute, Focus, navigation, and volume actions, and report
-unsupported or failed audio operations visibly.
-
-## Phase 7: Implement Pixels and Buzzer
-
-### 7.1 Add an OutputController
-
-It should own:
-
-- Pixel patterns
-- Pixel brightness
-- Buzzer tone state
-- Output lease
-- Safe shutdown behavior
-
-### 7.2 Use allowlisted commands
-
-Supported commands should be fixed:
-
-```text
-pixels.set_pattern
-pixels.off
-buzzer.short_tone
-buzzer.stop
-outputs.stop
-```
-
-Do not permit raw GPIO, arbitrary bus addresses, shell commands, or
-free-form model-generated hardware commands.
-
-### 7.3 Enforce limits on the MCU
-
-The MCU must independently enforce:
-
-- Allowed patterns
-- Brightness bounds
-- Tone duration maximum
-- Session identity
-- Command expiration
-- Duplicate-command rejection
-
-Tone duration is capped at 250 ms without looping.
-
-### 7.4 Add an output lease
-
-Linux renews the lease approximately once per second. If it expires after
-approximately three seconds:
-
-- Stop the buzzer.
-- Turn Pixels off.
-- Enter a safe state.
-
-### 7.5 Keep output execution separate from policy
-
-The MCU executes bounded commands. It does not decide:
-
-- Notice priority
-- Focus state
-- Mute policy
-- Whether a model response is valid
-
-### 7.6 Prove official output behavior before policy integration
-
-Run the official Pixels and Buzzer examples on the assembled topology first.
-Confirm that `show()` is required for Pixels, that brightness is bounded as
-documented by the installed library, and that `noTone()` reliably stops a
-tone. Measure actual tone duration and Pixel update latency. Only then add
-the ContextCue command wrapper and lease behavior.
-
-## Phase 8: Expand the Python gateway API
-
-Add gateway operations in dependency order.
-
-### State and discovery
-
-```python
-get_capabilities()
-read_state(after_event_seq=None)
-get_device_health()
-```
-
-### Outputs
-
-```python
-execute(command)
-heartbeat(session_id)
-```
-
-### Linux peripherals
-
-```python
-audio_discover()
-audio_pair()
-audio_select()
-audio_status()
-audio_play()
-audio_stop()
-set_display_level()
-```
-
-Every operation needs strict validation, a timeout, explicit errors, recovery
-behavior, and fake-peer tests.
+Work still proceeds in thin vertical slices: prove the device with the
+official Arduino API, integrate it into the MCU contract, decode it on Linux
+with failure/recovery tests, and only then let application policy consume it.
+
+## Status at 6 November 2026
+
+| Area | Status | Evidence |
+|---|---|---|
+| Thermo, Light, Distance acquisition (HW-01) | Done | Real readings on the board; independent RPCs `cc_read`, `cc_read_light`, `cc_read_distance`; 37 automated tests |
+| Gateway decoding, freshness, reboot detection, health (HW-04, sensing part) | Done | `contextcue_hardware/gateway.py`; boot ID, sequence and staleness checks |
+| Failure attribution and clean stop | Done | Bridge reasons `mcu_unresponsive` / `router_unavailable` / `gateway_stopped`; SIGTERM handled; verified by freezing the MCU over SWD |
+| SSH deploy/run workflow | Done | `scripts/unoq.sh`, VS Code tasks |
+| Pixels and Buzzer, output lease (HW-03, HW-07) | In progress | MCU `OutputController` and RPCs `cc_out`, `cc_lease`, `cc_read_outputs` (firmware 0.2.0) with host tests. On the board: Buzzer detected, tone and lease expiry verified; **Pixels not detected at `0x36`**. Gateway `execute`, `heartbeat`, `read_outputs` and output health done with 14 tests and verified on the board on 7 November (lease, tone accepted then completed, Pixels rejected as unavailable, stop on close) |
+| Calibration and hardware manifest (HW-06) | Not started | Plan below; one sampling-rate observation recorded |
+| On-board LLM (APP-06 to APP-08, G1) | Researched, not benchmarked | Findings below |
+| Speech (TTS) | Researched | Arduino's TTS Brick does not support the UNO Q |
+| Display/touch and Bluetooth (HW-02, HW-05) | Researched | Existing desktop stack identified; no speaker paired yet |
+| SWE application (ContextEngine, policy, UI, persistence, simulator) | Not started | Phases 9 and 10, unchanged |
+
+## Platform findings (6 November 2026)
+
+Measured on the team's board over SSH (hostname `Obuks`) and from the Brick
+catalogue and Python sources installed on it. Versions: `arduino-app-cli`
+0.14.1, Brick assets 0.13.2, Arduino Router 0.11.0.
+
+### Board resources
+
+| Resource | Measured |
+|---|---|
+| RAM | 3.6 GiB usable (4 GB variant); about 2.2 GiB available with the desktop and the sensing app running |
+| Swap | 1.8 GiB |
+| CPU | 4 cores |
+| OS | Debian 13 (trixie), kernel 7.0.0 |
+| Storage | 29.1 GiB eMMC: root `/` 9.8 GB with **2.5 GB free**, and `/home/arduino` 18 GB with **16 GB free** |
+
+Docker images (`/var/lib/docker`) and App Lab's model folder
+(`/var/lib/arduino-app-cli/models`) are on the root partition, so its 2.5 GB,
+not the 16 GB under `/home/arduino`, limits model and container downloads.
+Moving them to `/home` would need root access and is not supported by App Lab
+as far as we know.
+
+### LLM: Arduino `arduino:llm` Brick
+
+**What exists**
+
+- The `arduino:llm` Brick supports `unoq` and runs a **llama.cpp** service
+  (`ghcr.io/arduino/app-bricks/llamacpp-runner:0.13.2`, already pulled on the
+  board, 203 MB). It serves an OpenAI-compatible API on `127.0.0.1:9999/v1`.
+- Service limits from its compose file: `mem_limit` 2500 MB, 4 threads,
+  one loaded model (`LLAMA_ARG_MODELS_MAX=1`), reasoning off, context size
+  `LLAMA_ARG_CTX_SIZE` (default 16384, configurable per app).
+- Models catalogued for the UNO Q: **Qwen3.5-0.8B Q4_0** (default, 507 MB)
+  and **Gemma 3 1B Q4_0** (722 MB). Larger models (Gemma 4, Qwen3 4B via
+  Genie) are VENTUNO Q only. No model has been downloaded to this board yet;
+  App Lab downloads it into `/var/lib/arduino-app-cli/models/llamacpp/`.
+- Python API: `LargeLanguageModel(system_prompt, temperature=0.7,
+  max_tokens=512, timeout=None, tools=None, model=None)` with `chat()`,
+  `chat_stream()`, `stop_stream()`, `with_memory()` and `list_models()`,
+  built on LangChain's OpenAI client.
+- Reference implementation: `examples/inspirational/platform_unoq/edge-ai-assistant`
+  (`web_ui` + `llm`), which streams tokens to the browser over WebSocket and
+  stops generation with `stop_stream()`.
+
+**Fit with the baseline**
+
+| Baseline need | Brick support | Assessment |
+|---|---|---|
+| Actual on-board generation, no silent cloud fallback | Local llama.cpp | Fits. `cloud_llm` exists but may only be used as a disclosed contingency |
+| One active request (§6) | Service loads one model; our worker serializes requests | Fits |
+| Deadline and cancellation (APP-07) | `timeout` (whole seconds), `stop_stream()` | Fits with a thin async wrapper; must verify that cancellation frees the server promptly |
+| <=160 output tokens, <=2048 input tokens | `max_tokens`; context size variable | Fits; set context to about 4096 instead of 16384 to save memory |
+| Structured `ModelResponse` with evidence IDs (APP-08) | `chat()` returns free text | Gap. Either prompt for JSON and validate strictly through the Brick, or call the llama.cpp endpoint directly with JSON-schema constrained output (unverified on this runner) |
+| No model hardware authority | `tools` parameter exists | Never pass `tools`; never enable memory (each request is an independent snapshot) |
+
+**Assessment:** feasible to build on, **not yet proven**. Use the Brick to
+provision and run the model (declare `arduino:llm` in `app.yaml`) and keep
+ContextCue's own validator. Whether a 0.8B or 1B model can meet T03 (>=90%
+acceptable grounded generations) and the latency budget is the main unknown.
+
+**Benchmark before committing (G1)**
+
+1. Add `arduino:llm` to a benchmark app and let App Lab download the default
+   model (507 MB of the 2.5 GB free on the root partition).
+2. Run about 30 representative ContextCue prompts (snapshot JSON in, short
+   briefing out) at <=2048 input and <=160 output tokens: cold load time, warm
+   p50/p95 latency, tokens per second, peak memory.
+3. Measure the JSON/evidence-ID validity rate with prompting alone; then test
+   the direct endpoint with a JSON schema.
+4. Measure the effect on the sensing loop and UI responsiveness during
+   generation (T02).
+5. Repeat with Gemma 3 1B and with context 4096 versus 16384; record the
+   chosen model, timeout and memory budget.
+
+### Speech (TTS)
+
+- Arduino's `arduino:tts` Brick (Piper English voice on the Genie/QNN audio
+  service) lists **only `ventunoq`** as a supported board. The `asr` and
+  `vlm` Bricks are VENTUNO Q only as well. They cannot be used on the UNO Q.
+- No speech engine is installed on the board (no `espeak-ng` or Piper).
+- Candidates: **espeak-ng** (very small and fast, robotic voice) and
+  **Piper on the CPU** (more natural; voice files about 20-60 MB; speed on
+  this CPU and licensing must be checked). Both produce a WAV file that the
+  audio path below can play.
+- Open: how to add a system package or binary to an App Lab app container
+  (apps install Python requirements only); a pip-installable engine may be
+  required.
+
+### Display, touch and the existing GUI
+
+- The "Arduino GUI" on the touchscreen is the standard Debian desktop:
+  **LightDM, Xorg and XFCE 4** (panel, desktop, window manager), the
+  `light-locker` screen locker, the NetworkManager applet and the **Blueman**
+  Bluetooth applet, plus the **App Lab** desktop application (WebKitGTK).
+  It is not an application framework that ContextCue can extend, but its
+  components can be reused.
+- Screen: **Waveshare 7-inch** with USB touch (`0eef:0005`, WS170120) at
+  **1024x600 on DP-1**, connected through a StarTech USB-C multiport dock.
+- There is **no `/sys/class/backlight` device**, so native brightness control
+  from Linux is unlikely. `set_display_level` should report unsupported and
+  the UI should use the baseline's visual dimming overlay.
+- Chromium is installed; `xinput` and an on-screen keyboard are not.
+- Arduino's **`web_ui` Brick** serves static HTML/JavaScript, REST endpoints
+  and a Socket.IO WebSocket on port 7000, and declares
+  `requires_display: webview`. Every reference app with a UI uses it.
+
+**Assessment:** build the ContextCue UI as a `web_ui` app (the baseline's
+React/TypeScript recommendation can be served as static assets) shown full
+screen on the Waveshare, using App Lab's webview or Chromium in kiosk mode.
+Screen blanking and `light-locker` must be disabled for kiosk use.
+
+### Bluetooth and audio
+
+- **BlueZ 5.82** is running; the controller is powered and pairable and
+  advertises the **Audio Source** (A2DP source) profile, so it can stream to
+  a speaker. **Blueman 2.4.4** provides the desktop pairing UI.
+- **PipeWire 1.4.2 with WirePlumber and the Bluetooth plugin**
+  (`libspa-0.2-bluetooth`) is running, so a connected speaker appears as a
+  PipeWire output node. No device is paired yet.
+- Built-in audio also offers line-out and headphone-jack outputs, a possible
+  wired fallback.
+- Arduino's `Speaker` peripheral (used by `sound_generator`; ALSA via
+  `pyalsaaudio`) lists USB and jack outputs and also opens an explicit
+  `pipewire:NODE=<node.name>` device, which should reach a Bluetooth node.
+
+**Assessment:** reuse the existing stack instead of a new bring-up. Pair the
+speaker once from Blueman (an explicit, user-triggered setup step), then have
+the app play synthesized speech to the speaker's PipeWire node through the
+`Speaker` peripheral. Readiness comes from the node's presence and BlueZ's
+`Connected` state; neither proves that a person heard the audio.
+
+### Other reusable Bricks
+
+| Brick | What it gives ContextCue | Use |
+|---|---|---|
+| `weather_forecast` | Open-Meteo forecasts by city or coordinates, WMO codes mapped to simple categories | Basis for the post-demo `OpenMeteoWeatherAdapter`; check which timestamps it exposes for freshness |
+| `dbstorage_sqlstore` | Thread-safe SQLite store | Storage under `DataRepository` |
+| `web_ui` | Web server, REST and WebSocket | User interface |
+| `cloud_llm` | OpenAI/Anthropic/Gemini clients | Disclosed off-board contingency only |
+| `sound_generator` | Tones and melodies through `Speaker` | Optional chime; the Buzzer remains an MCU output |
+| `tps` | Wi-Fi geolocation (cloud credentials) | Not used |
+
+### Modulino Pixels and Buzzer (Arduino_Modulino 0.10.0)
+
+- `ModulinoPixels`: 8 LEDs; `set(index, color, brightness 0-100)` maps
+  brightness to 5 bits; `clear()`; `show()` writes all 8 LEDs. I2C address
+  `0x36`.
+- `ModulinoBuzzer`: `tone(frequency_hz, duration_ms)` and `noTone()`. The
+  Buzzer module's own microcontroller times the tone. I2C address `0x1E`.
+- `Module::begin()` caches the address after the first successful discovery,
+  and `write()` ignores I2C errors. The library therefore cannot detect a
+  disconnected output; ContextCue must probe the address itself, as it does
+  for Distance.
+
+## Remaining work
+
+### A. On-board LLM feasibility (G1) — first
+
+Run the benchmark above before writing the RecommendationService. Record the
+model, runtime, measured timeout and memory budget, and whether the on-board
+goal is met. If it is not, select a smaller configuration or a disclosed
+off-board contingency, as the baseline requires.
+
+### B. Pixels and Buzzer (HW-03, HW-07)
+
+1. **Bring-up gate.** Confirm both modules are detected at `0x36` and `0x1E`
+   on the assembled Qwiic chain; confirm `show()` is required, `noTone()`
+   stops a tone, and measure tone duration and Pixel update latency.
+2. **MCU `OutputController`** (`sketch/src/outputs/`):
+   - Quiet boot: Pixels cleared and `noTone()` in `setup()`.
+   - Allowlist only: `pixels.set_pattern` (`ready`, `notice`, `fault`, `off`),
+     `pixels.off`, `buzzer.short_tone`, `buzzer.stop`, `outputs.stop`.
+   - MCU-enforced bounds: brightness 0-1, tone duration <=250 ms without
+     looping, bounded frequency, remaining TTL > 0 (standard TTL 2 s),
+     duplicate command IDs rejected within a session.
+   - Output lease: `cc_lease(session)` renews it; after 3 s without renewal
+     the MCU stops the Buzzer and turns Pixels off. A new session never
+     replays old commands.
+   - RPC callbacks only validate and queue commands; the main loop performs
+     I2C writes. Results report `accepted`, `rejected`, `completed`,
+     `failed` or `expired` with a reason; acceptance is not completion.
+   - Disconnect detection by address probe; outputs report health like the
+     sensors.
+3. **Gateway:** `execute(command)` and `heartbeat(session_id)` with
+   `DeviceCommand` and `CommandResult` contracts, strict validation on Linux
+   as well as on the MCU, and capability reporting of patterns and limits.
+4. **Tests:** firmware tests for bounds, TTL, duplicates and lease expiry;
+   gateway fake-peer tests; physical lease-loss test (outputs off within 3 s).
+5. **Bring-up finding (7 November):** a bus scan of `Wire1` found the Buzzer
+   (`0x1E`), Distance (`0x29`), Thermo (`0x44`) and Light (`0x53`), but nothing
+   from the Pixels at any address. With the Pixels as the only module on the
+   bus, the firmware never finished `setup()`: the first I2C transfer blocked
+   and the MCU idled in the Zephyr kernel. The Pixels module (or its
+   connector) is faulty: it powers up but does not answer, and in a
+   `Light -> Pixels -> Distance` chain the Distance sensor behind it also
+   disappeared, so it no longer passes the bus through. Keep it off the bus
+   (it can freeze every transfer) and replace it; no firmware or gateway
+   change is needed for a working module.
+6. **Follow-up: bounded I2C.** One misbehaving module can block every Wire1
+   transfer and freeze all sensing and outputs, because these transfers wait
+   without a timeout. Find a Zephyr I2C timeout (or bus-recovery) setting
+   available to the pinned core, so a stuck device only marks itself
+   unavailable. Until then a stuck bus needs the module removed and an MCU
+   reset.
+
+### C. Calibration and hardware manifest (HW-06)
+
+1. **Manifest:** board variant, OS, core and library versions (pinned in
+   `sketch/sketch.yaml`), module variants and I2C addresses, cable order and
+   mounting positions. Wiring and mounting need the team's input.
+2. **Sampling rates.** One 66-second run on 6 November reached Thermo
+   about 1.0 Hz, Light about 4.8 Hz and **Distance about 5.8 Hz against its
+   10 Hz target**. A likely cause is the Light driver's blocking waits in the
+   shared loop. Measure over several minutes; if confirmed, restructure the
+   loop or record a revised supported rate.
+3. **Light:** dark (sensor covered) and bright (desk lamp) references in the
+   mounted position; check lux plausibility against a reference meter if one
+   is available.
+4. **Distance:** readings against a ruler at about 200, 400, 500, 650, 800 and
+   1000 mm in the mounted position; confirm the near (<=500 mm) and clear
+   (>650 mm) thresholds; document the out-of-range behavior (currently
+   reported as `distance_timeout`).
+5. **Thermo:** compare with a reference thermometer/hygrometer for about
+   10 minutes, then repeat with the LLM running to measure self-heating;
+   record any offset in the manifest, not in policy code.
+6. **Tooling:** a calibration command that collects samples for a set time
+   through the real gateway and prints statistics and achieved rates, run on
+   the board through `scripts/unoq.sh`.
+
+### D. Display, touch and Bluetooth on the existing stack (HW-02, HW-05)
+
+1. Pair the team's speaker from Blueman; confirm a PipeWire Bluetooth node
+   appears and reconnects after a power cycle.
+2. From an app container, play a WAV through `Speaker` to the
+   `pipewire:NODE=...` Bluetooth node; measure start latency, stop behavior,
+   and 20 playbacks (T06).
+3. Choose the TTS engine (espeak-ng versus Piper) by speed, quality, size and
+   licensing; settle how it is installed in the app container.
+4. Show a `web_ui` page full screen on the Waveshare; confirm touch
+   orientation; disable blanking and `light-locker`; implement dimming as an
+   overlay.
+
+### E. SWE foundations — unchanged
+
+Phases 9 and 10 below are carried over from the previous plan without
+change.
 
 ## Phase 9: Implement application policy
 
@@ -845,193 +447,92 @@ notice. Require a reliability gate, including controlled accuracy tests and
 zero unsafe actions. Failure of this feature must not affect the core product
 or demonstration.
 
-## Phase 11: Testing strategy
+## Testing and acceptance gates
 
-### 11.1 Contract tests
+At each vertical slice run `git diff --check`, the test suite
+(`python3 -m unittest discover -s tests -v`), the pinned Arduino CLI compile,
+and a real-board check. A laptop-only pass is not board validation.
 
-Use fake Bridge responses to test:
+Do not advance a layer until its gate passes:
 
-- Valid readings
-- Missing readings
-- Invalid ranges
-- Duplicate sequences
-- Stale data
-- Reboots
-- Disconnects
-- Malformed responses
-- Independent module failures
-
-Extend `tests/hardware/test_gateway.py` or add focused test modules as the gateway
-surface grows.
-
-Also test the output, policy, and adapter contracts without hardware:
-
-- Allowlisted commands, bounds, expiration, session identity, and duplicate
-  handling.
-- Output lease expiry and recovery after reconnect.
-- Clear/near hysteresis, persistence, stale/unknown Distance, and long-idle
-  audio suppression.
-- At-desk, away-mode opt-in, disconnected Bluetooth, Do Not Disturb, return
-  summary, acknowledgement, expiration, and bounded important-reminder
-  repeats.
-- Fixture/live adapter normalization, malformed data, timeout, rate limit,
-  token expiry, revoked consent, stale cache, and no silent fixture fallback.
-- Touchscreen actions, volume bounds, unsupported endpoint operations, and
-  explicit error presentation.
-- Recommendation evidence validation, obsolete-result cancellation, timeout,
-  and labeled fallback behavior.
-
-Every test must assert both the action and the observable reason/state. A
-successful function return alone is not proof that audio was heard or that a
-Pixel/Buzzer physically changed state.
-
-### 11.2 Build and static validation
-
-At each vertical slice, run:
-
-1. `git diff --check`.
-2. The repository gateway test task:
-   `python3 -m unittest discover -s tests -v`.
-3. The pinned Arduino CLI compile task for the UNO Q sketch.
-4. Python import/compile checks and type/lint checks when configured.
-5. A protocol fixture compatibility test against the previous Thermo-only
-   response.
-
-Do not treat a laptop-only test pass as board validation.
-
-### 11.3 Firmware tests
-
-Test where practical:
-
-- Sampling intervals
-- Sequence increments
-- Failed initialization
-- Reconnection
-- Range validation
-- JSON size limits
-- Command bounds
-- Duplicate command handling
-- Output lease expiry
-- Safe output state
-- Official library initialization failures and no-new-data behavior
-- Non-blocking main-loop behavior while Bridge callbacks are serviced
-
-### 11.4 Physical board verification
-
-Unit tests cannot validate:
-
-- Actual I2C behavior
-- Electrical connections
-- Sensor calibration
-- Sensor conversion accuracy
-- Driver blocking behavior
-- Actual sampling rates
-
-Record:
-
-- Hardware model and variant
-- Actual readings
-- Disconnect and reconnect behavior
-- MCU reboot behavior
-- Bridge reset behavior
-- Measured sampling rates
-- Calibration values
-- Timing and acquisition delays
-- Qwiic addresses, topology, cable lengths, and power observations
-- Pixels `show()` behavior and Buzzer `noTone()` stop behavior
-- UI touch latency, Bluetooth endpoint loss/reconnect, and audio routing
-
-### 11.5 Acceptance gates
-
-Do not advance to the next layer until the current gate passes:
-
-1. **Hardware gate:** official Arduino example works on the exact assembled
-   module and the result is recorded with versions and wiring.
-2. **Firmware gate:** cached acquisition is non-blocking, bounded, sequenced,
-   and recovers from disconnects.
-3. **Protocol gate:** encoded responses fit the measured limit and preserve
-   independent module failures.
-4. **Gateway gate:** strict decoding, freshness, reboot, and health behavior
-   pass automated tests.
-5. **Output gate:** Pixels/Buzzer commands are bounded and lease-safe on real
-   hardware.
-6. **Policy gate:** deterministic notification/audio scenarios pass with
+1. **Hardware gate:** the official Arduino example works on the exact
+   assembled module, recorded with versions and wiring.
+2. **Firmware gate:** acquisition and output work is non-blocking, bounded,
+   sequenced, and recovers from disconnects.
+3. **Protocol gate:** responses fit the measured limit and keep module
+   failures independent.
+4. **Gateway gate:** strict decoding, freshness, reboot, health and command
+   outcomes pass automated tests.
+5. **Output gate:** Pixels and Buzzer commands are bounded and lease-safe on
+   real hardware.
+6. **LLM gate:** the selected local model meets the recorded latency, memory,
+   grounding and failure criteria on the UNO Q.
+7. **Audio gate:** the selected speaker meets T06 through the app's playback
+   path; stop cancels actual playback.
+8. **Policy gate:** deterministic notification/audio scenarios pass with
    fixtures and simulated failures.
-7. **Provider gate:** live adapters pass consent, expiry, outage, freshness,
+9. **Provider gate:** live adapters pass consent, expiry, outage, freshness
    and no-fallback tests; the demo still works offline.
-8. **LLM gate:** the selected local model meets the recorded latency,
-   memory, evidence-grounding, and failure criteria on the UNO Q.
-9. **System gate:** two clean setup/recovery runs complete and all failures
-   remain visible without unsafe or repeated output.
+10. **System gate:** two clean setup/recovery runs complete and all failures
+    stay visible without unsafe or repeated output.
 
-## Recommended implementation order
+Every test asserts both the action and the observable reason or state. A
+successful return is not proof that audio was heard or that a Pixel or the
+Buzzer physically changed.
 
-1. Shared multi-module contracts
-2. MCU `SensorController` refactor
-3. Light sensor
-4. Distance sensor
-5. Multi-module Bridge response
-6. Python gateway decoding and health
-7. Physical sensor calibration
-8. Calendar/weather adapter contracts and fixed fixtures
-9. Google Calendar and Microsoft 365 adapters
-10. Touchscreen controls and acknowledgement
-11. `OutputController`
-12. Output lease and safe state
-13. `ContextEngine`
-14. RecommendationService and local LLM validation
-15. `NotificationService`
-16. Peripheral and audio adapter
-17. User interface
-18. Optional camera gesture experiment
-19. Full integration and acceptance testing
+## Recommended order
 
-The critical dependency is reliable hardware contracts before application
-behavior. This prevents ContextCue from making decisions based on unclear,
-stale, invalid, or fabricated sensor data.
+1. LLM benchmark (A), started first because the model download and
+   measurements take time.
+2. Pixels and Buzzer (B).
+3. Calibration and manifest (C), including the Distance rate check.
+4. Speaker pairing, container playback and TTS choice (D).
+5. Kiosk display shell (D).
+6. SWE foundations (Phases 9 and 10).
+7. Integration and acceptance testing.
 
-## Final readiness assessment
+## Unresolved questions
 
-### Ready to begin
+| Question | Blocks | How to resolve |
+|---|---|---|
+| Can a 0.8B/1B model meet T03 grounding and the latency budget? | APP-06 to APP-08 | Benchmark (A) |
+| Does the llama.cpp runner accept JSON-schema constrained output? | Validator design | Direct endpoint test during (A) |
+| Does the UNO Q runner use the Hexagon DSP or only the CPU? | Latency expectations | Inspect the runner and measure during (A) |
+| Does stopping a stream free the server immediately? | APP-07 cancellation | Test during (A) |
+| Which TTS engine, and how is it installed in an app container? | APP-15 | Trial both engines (D) |
+| Does an app container reach PipeWire and the Bluetooth node? | APP-15, T06 | Playback test (D) |
+| Can an app container reach BlueZ over D-Bus for in-app pairing and status, or must pairing stay in Blueman? | APP-15 pair/select UI | Test (D) |
+| How is speech volume set from the app (PipeWire node volume)? | Touch volume control | Test (D) |
+| How does App Lab show a `web_ui` app on the board display, and can it start at boot in kiosk mode? | APP-02, APP-03 | Test (D) |
+| Is any native brightness control available (DDC/CI or the panel's own controls)? | Brightness policy | Check the Waveshare model (D) |
+| Does the Distance rate reach 10 Hz alongside Light? | Proximity timing | Measure (C) |
+| Do all five Modulinos coexist on the Qwiic chain without address or power problems? | B, C | Bring-up gate (B) |
+| Replacement Pixels module (the current one is faulty: no I2C response, no pass-through, hangs the bus alone) | Pixels output, HW-03, T02/T05 | Order and fit a replacement |
+| Can Wire1 transfers be given a timeout on the pinned Zephyr core? | Robustness to a stuck device | Inspect the core's I2C driver configuration |
+| Long-idle interval, unknown-Distance behavior, away-mode grace, return summary, important-repeat count | Notification policy | Product decision before Phase 10 |
+| Clerk scopes, token lifecycle and Open-Meteo attribution/rate rules | Live adapters (post-demo) | Provider gate |
 
-- Preserve and baseline the existing Thermo/Bridge/Gateway path.
-- Freeze versions and create the hardware manifest.
-- Prove the five-module Qwiic topology.
-- Use the official `Arduino_Modulino` APIs and examples for Light, Distance,
-  Pixels, and Buzzer.
-- Add contract tests and protocol-size measurements before changing the
-  response shape.
+## Completed work record
 
-### Requires investigation before implementation
+Phases 0 to 5 of the 25 October plan are complete for the three sensors:
 
-- Exact Light and Distance library behavior at the pinned version, including
-  units, invalid values, blocking time, and sampling limits.
-- Whether all five modules coexist on the selected bus topology and power
-  budget.
-- Final Bridge response encoding and size.
-- Touchscreen and Bluetooth Linux APIs, endpoint/volume semantics, and failure
-  UX.
-- Away-mode, long-idle, unknown-Distance, Do Not Disturb, return-summary, and
-  important-repeat parameters.
-- Clerk scopes/token lifecycle and Open-Meteo operational requirements.
-- UNO Q local LLM runtime/model feasibility.
-
-### Technical risks
-
-- The plan's target sampling rates may exceed what the official drivers,
-  shared I2C bus, Bridge transport, or main loop can sustain.
-- A response that fits as JSON may not fit after Bridge encoding or future
-  error fields are added.
-- Distance and Light readings depend on mounting, reflective surfaces, and
-  calibration; nominal datasheet behavior is not desk-level behavior.
-- Bluetooth connection does not prove that a person heard audio.
-- A local LLM may fail the UNO Q memory or latency budget.
-- Provider authentication, network failure, and stale caches can produce
-  misleading context unless every state is labeled.
-
-### Required review outcome
-
-The plan is suitable for development planning, but it is **not yet a
-pass-through implementation checklist**. The first work item must be the
-manifest/topology/API verification gate. Any failed gate must update the
-contract and acceptance tests before dependent implementation continues.
+- **Contracts:** `contextcue_contracts` holds `SensorSample`,
+  `HardwareCapabilities`, `HealthState` and `GatewayState`, with module IDs
+  `thermo`, `light`, `distance` and quality values from the baseline.
+- **MCU:** `SensorController` keeps independent state and schedules for each
+  sensor (Thermo 1 Hz, Light 5 Hz, Distance 10 Hz target) with named
+  failures. Hardware access stays in the main loop; RPC callbacks return
+  cached state.
+- **Protocol:** separate compact RPCs per sensor (`cc_open`, `cc_read`,
+  `cc_read_light`, `cc_read_distance`) within the 224-byte limit, instead of
+  one combined response.
+- **Gateway:** strict per-module decoding, sequence/uptime/boot checks,
+  freshness limits (Thermo 5 s, Light and Distance 2 s, Bridge 3 s) and
+  separate health for Bridge, Thermo, Light and Distance.
+- **Deviations from the old plan:** Light is reported as `ambient_light` in
+  lux from the library's `getAL()` (the old plan proposed `ambient_level`);
+  lux accuracy is still to be checked during calibration. Distance's
+  `begin()` runs only at boot and after a disconnect, because the library
+  allocates new driver objects on every call.
+- **Diagnostics (6 November):** Bridge failures name the failing side and
+  a requested stop ends with a `stopped` record; see the hardware README.
