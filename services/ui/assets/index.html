@@ -7,102 +7,79 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <div id="frame">
+  <div id="frame" data-tab="glance" data-sky="day">
+    <!-- Decorative sky behind the header; local CSS + scene.svg only. -->
+    <div id="sky" aria-hidden="true"><div class="sun"></div><div class="hills"></div></div>
+
     <header id="topbar">
-      <div class="clock">
-        <div id="time" class="time">--:--</div>
-        <div class="clock-meta">
-          <div id="date">Loading</div>
-          <div id="clock-label" class="tag"></div>
-        </div>
+      <div class="brand">
+        <svg class="logo" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 2 21 7v10l-9 5-9-5V7z" fill="#7cc4ff"/>
+          <path d="M12 12 21 7v10l-9 5z" fill="#3b8ee8"/>
+          <path d="M12 12 3 7v10l9 5z" fill="#5aa9f5"/>
+          <path d="M12 2 21 7l-9 5-9-5z" fill="#b9e1ff"/>
+        </svg>
+        <span class="name">ContextCue</span>
       </div>
-      <div class="chips">
-        <button id="chip-focus" class="chip" data-action="toggle-focus" aria-pressed="false">Normal</button>
-        <button id="chip-mute" class="chip" data-action="toggle-mute" aria-pressed="false">Sound on</button>
-        <span id="chip-audio" class="chip static"></span>
-        <button id="chip-health" class="chip" data-view="health"></button>
+      <div id="badges" class="badges"></div>
+      <div class="controls">
+        <button id="btn-focus" class="hbtn" data-action="toggle-focus" aria-pressed="false"></button>
+        <button id="btn-mute" class="hbtn" data-action="toggle-mute" aria-pressed="false"></button>
+        <button id="btn-status" class="hbtn" data-goto="status"></button>
+        <div class="clock"><div id="time">--:--</div><div id="clock-label"></div></div>
       </div>
     </header>
 
     <main id="views">
-      <!-- Glance -->
-      <section id="view-glance" class="view active" aria-label="Glance">
-        <div id="notice-slot"></div>
-        <div class="cards">
-          <article class="card" id="card-schedule">
-            <h2><span class="kind">Calendar</span><span id="sched-tag" class="tag"></span></h2>
-            <div id="sched-body"></div>
-          </article>
-          <article class="card" id="card-indoor">
-            <h2><span class="kind">Indoor</span><span class="sub">measured by sensors</span></h2>
-            <div id="indoor-body" class="readings"></div>
-          </article>
-          <article class="card" id="card-forecast">
-            <h2><span class="kind">Outdoor</span><span id="wx-tag" class="tag"></span></h2>
-            <div id="wx-body"></div>
-          </article>
-        </div>
-      </section>
-
-      <!-- Briefing / Alert -->
-      <section id="view-briefing" class="view" aria-label="Briefing">
-        <div class="split">
-          <div class="pane">
-            <h1>Ask ContextCue</h1>
-            <p class="hint">Answers use only current data. Unsupported questions are not answered.</p>
-            <button class="big primary" data-action="briefing">Brief me now</button>
-            <div id="questions" class="question-grid"></div>
+      <section id="tab-glance" class="tab active" aria-label="Glance">
+        <div class="hello">
+          <div>
+            <h1 id="greeting">Hello</h1>
+            <div id="dateline" class="dateline">Loading…</div>
           </div>
-          <div class="pane">
-            <h1>Notices</h1>
-            <div id="notice-list" class="list"></div>
+          <div class="hello-actions">
+            <button class="sky-btn" data-sheet="ask"><svg class="i" aria-hidden="true"><use href="icons/sprite.svg#circle-help"></use></svg>Ask</button>
+            <button class="sky-btn primary" data-action="briefing"><svg class="i" aria-hidden="true"><use href="icons/sprite.svg#sparkles"></use></svg>Brief me</button>
           </div>
         </div>
-      </section>
-
-      <!-- Why -->
-      <section id="view-why" class="view" aria-label="Why">
-        <div id="why-body"></div>
-      </section>
-
-      <!-- Settings / Focus -->
-      <section id="view-settings" class="view" aria-label="Settings">
-        <div id="settings-body" class="settings"></div>
-      </section>
-
-      <!-- Audio -->
-      <section id="view-audio" class="view" aria-label="Audio">
-        <div id="audio-body" class="settings"></div>
-      </section>
-
-      <!-- Health -->
-      <section id="view-health" class="view" aria-label="Health">
-        <div class="split">
-          <div class="pane"><h1>Components</h1><div id="health-list" class="list"></div></div>
-          <div class="pane"><h1>Recent activity</h1><div id="diag-list" class="list mono"></div></div>
+        <div id="glance-grid" class="glance">
+          <div id="col-main" class="col-main">
+            <article id="hero" class="hero card" aria-live="polite"></article>
+            <div id="row-cards" class="row-cards"></div>
+          </div>
+          <aside id="col-side" class="col-side"></aside>
+        </div>
+        <!-- Cards are moved between columns by layout() in app.js. -->
+        <div hidden>
+          <article id="card-today" class="card"></article>
+          <article id="card-comfort" class="card"></article>
+          <article id="card-weather" class="card"></article>
+          <article id="card-sensors" class="card sensors"></article>
         </div>
       </section>
 
-      <!-- Simulation -->
-      <section id="view-simulation" class="view" aria-label="Simulation">
-        <div id="sim-body" class="settings"></div>
+      <section id="tab-settings" class="tab" aria-label="Settings">
+        <nav id="settings-nav" class="snav" aria-label="Settings sections"></nav>
+        <div id="settings-pane" class="spane"></div>
       </section>
     </main>
 
-    <nav id="nav" aria-label="Views">
-      <button data-view="glance" class="active">Glance</button>
-      <button data-view="briefing">Ask</button>
-      <button data-view="why">Why</button>
-      <button data-view="settings">Settings</button>
-      <button data-view="audio">Audio</button>
-      <button data-view="health">Health</button>
-      <button data-view="simulation">Simulation</button>
+    <nav id="tabbar" aria-label="Main">
+      <button data-tab="glance" class="active"><svg class="i" aria-hidden="true"><use href="icons/sprite.svg#house"></use></svg>Glance</button>
+      <button data-tab="settings"><svg class="i" aria-hidden="true"><use href="icons/sprite.svg#settings"></use></svg>Settings</button>
     </nav>
 
+    <div id="sheet" class="overlay" hidden><div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title"></div></div>
+    <div id="dialog" class="overlay" hidden><div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="dialog-title"></div></div>
     <div id="toast" role="status" aria-live="polite"></div>
-    <div id="offline" hidden>Lost connection to the ContextCue app. Retrying…</div>
+    <div id="offline" role="alert" hidden>
+      <svg class="i" aria-hidden="true"><use href="icons/sprite.svg#wifi-off"></use></svg>
+      <div><strong>Lost connection to the ContextCue app</strong><span>Retrying… The values shown may be out of date.</span></div>
+    </div>
+    <!-- Visual dimming: the panel has no Linux backlight control (baseline section 6). -->
     <div id="dim" aria-hidden="true"></div>
   </div>
+  <script src="ui-logic.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

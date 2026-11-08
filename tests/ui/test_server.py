@@ -61,8 +61,11 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         status, body, kind = await self.call("/")
         self.assertEqual(status, 200)
         self.assertIn(b"ContextCue", body)
-        for asset in ("/app.js", "/styles.css"):
-            self.assertEqual((await self.call(asset))[0], 200)
+        for asset, kind in (("/app.js", "javascript"), ("/ui-logic.js", "javascript"), ("/styles.css", "text/css"),
+                            ("/icons/sprite.svg", "image/svg+xml"), ("/scene.svg", "image/svg+xml")):
+            status, _, served = await self.call(asset)
+            self.assertEqual(status, 200, asset)
+            self.assertIn(kind, served, asset)
 
     async def test_actions_and_errors(self):
         status, body, _ = await self.call("/api/action", {"action": "mute", "payload": {"muted": True}})

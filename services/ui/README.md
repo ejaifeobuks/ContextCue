@@ -1,7 +1,8 @@
 # UI service
 
 **Status (7 November 2026): implemented and tested on a laptop against the
-simulated gateway; not yet shown on the Waveshare panel.**
+simulated gateway, redesigned to two tabs the same day; not yet shown on the
+Waveshare panel.**
 
 ## Run it
 
@@ -31,21 +32,70 @@ Only the Python standard library is used (3.10+). `zoneinfo` needs the
   model) and `POST /api/action` (`{"action", "payload"}`). Errors come back as
   400 with a readable message; path traversal is refused.
 - `assets/`: plain HTML/CSS/JS, no build step, laid out for 1024x600 with
-  touch targets of at least 44 px. The page polls every 500 ms.
+  touch targets of at least 48 px. The page polls every 500 ms and replaces a
+  region's markup only when it changed.
 
-| View | Content |
+### Layout (redesign of 7 November 2026)
+
+Two tabs only, **Glance** and **Settings**, following
+`ContextCue_UI_Implementation_Plan.md`. The former Ask, Why, Audio, Health and
+Simulation tabs became contextual parts of these two.
+
+| Where | Content |
 |---|---|
-| Glance | Time with a scenario/device clock label, Normal/Focus and Mute chips, audio policy, health summary, one highest-priority notice (Why, Play, Done), calendar, indoor readings, outdoor forecast |
-| Ask (Briefing) | "Brief me now", four bounded questions, list of notices with lifecycle and origin |
-| Why | Text origin, model request outcome and location, validation, priority, times, and every evidence input with value, unit, source ID, observed time, validity, real/simulated and freshness at use and now |
-| Settings / Focus | Focus, Focus speech exception, morning and quiet windows, comfort ranges, units, zone, brightness, sources, clear data |
-| Audio | Engine, speaker, paired / connected / ready shown separately, mute, volume, policy, Buzzer opt-in, away announcements, stop |
-| Health | Each component's state and reason exactly as reported (`mcu_unresponsive`, `distance_timeout` ...), recent diagnostics |
-| Simulation | Scenario picker and time jumps; with `--simulated`, sensor sliders, Approach/Leave and fault switches. On real hardware only scenario time is offered; sensors are never faked |
+| Header (always) | Sensor source badge (Real sensors / Simulated sensors), Demo Mode badge, Focus and Mute buttons, device-status button (opens Device Status), clock labeled *Scenario time* or *Device time* |
+| Glance | Greeting and date on a time-of-day sky; **Ask** (sheet with the four bounded questions) and **Brief me**. Hero: the one highest-priority notice (category, headline from its evidence, text, origin and source labels, Why this?, Play, Done, "N more" sheet) or, with no notice, the next event. Today strip, Room comfort, Weather |
+| Why this? | Expands inside the notice: one plain-language line per evidence item with source, real/simulated and freshness, how the text was written (AI or factual fallback), and technical details on request |
+| Demo Mode | Display-only toggle in Developer & Demo, remembered in this browser only. Adds the live sensor panel (temperature, humidity, light, distance, comfort, brightness response, proximity) and changes no data |
+| Settings | General (units, time zone, brightness, clear data) · Calendar & Weather (sources, status, forecast location) · Sound & Notifications (speaker paired/connected/ready, mute, volume, policy, Buzzer, away, stop, quiet hours) · Focus & Comfort · Device Status (problems first, friendly hints, raw reasons under technical details) · Developer & Demo (Demo Mode, sensor source, scenarios, scenario clock, simulated sliders and faults only with `--simulated`, diagnostics log) |
 
 Every state is written as text (Simulated, Stale, Unavailable, Factual
-fallback ...), so nothing depends on color alone. Dimming is a CSS overlay
-because the panel has no Linux backlight control.
+fallback, Outside your range · checking ...), so nothing depends on color or
+icons alone. Dimming is a CSS overlay because the panel has no Linux backlight
+control.
+
+Presentation rules (weather icon map, health labels, comfort wording, notice
+headlines, Why lines) are pure functions in `assets/ui-logic.js`. Weather
+icons come only from `forecast.condition` (`sunny`, `cloudy`, `rainy`,
+`snowy`, `foggy`); missing, stale or unknown forecasts get a neutral
+icon and say why.
+
+For screenshots or a fixed kiosk start, the page reads its initial view from
+the URL: `?tab=settings&section=developer`, `?demo=1`, `?why=1`,
+`?details=1`, `?sheet=ask`. These set display state only; a `demo=` value
+given here is not saved.
+
+### Assets
+
+| File | What |
+|---|---|
+| `assets/icons/sprite.svg` | 48 Lucide icons (lucide-static 0.460.0, ISC; `assets/icons/LICENSE`), as `<symbol>`s used with `<use href="icons/sprite.svg#name">` |
+| `assets/scene.svg` | Header hills (original); sky and sun are CSS |
+
+Nothing is loaded from the network: no CDN, web fonts or remote images.
+
+### Tests
+
+- `tests/ui/test_server.py`: API, actions, errors, static files and content types.
+- `tests/ui/test_ui_assets.py`: no network resources, every referenced icon
+  is in the sprite, the weather map matches the contract conditions, exactly
+  two tabs, and every action the page sends exists on `ContextCueApp`.
+- `tests/ui/test_ui_logic.test.js`: the presentation rules (`node --test
+  tests/ui/test_ui_logic.test.js`); run from `test_ui_assets.py` when Node.js is installed.
+
+### Backend dependencies found during the redesign (not built)
+
+- **Forecast location:** the UI shows the source's location; changing it
+  needs a location-capable weather adapter, settings field and action.
+- **Sensor source switch:** chosen at launch (`--simulated`); a runtime
+  switch needs a gateway hot-swap design.
+- **Demo Mode persistence:** browser-only; storing it in app settings needs a
+  settings field.
+- **Notice headline for answers:** the notice does not carry the question it
+  answers, so the hero says "Your answer"; adding the question to the notice
+  would let it show the question.
+- **Volume:** saved but not applied until a speech adapter exists (the
+  backend reports `applied: false`).
 
 ## Still open
 

@@ -1,13 +1,41 @@
-/* ContextCue kiosk UI. Holds only view state (current view, selected notice);
-   every decision comes from the application service (UML class 1). */
+/* ContextCue kiosk UI: two tabs (Glance, Settings). Holds only view state;
+   every decision and value comes from the application service through
+   GET /api/state and POST /api/action. Presentation rules live in ui-logic.js. */
 "use strict";
 
+const L = window.CCLogic;
 const POLL_MS = 500;
-const state = { data: null, view: "glance", whyNotice: null, rendered: {}, dragging: false, lastTouch: 0 };
+const SECTIONS = [
+  ["general", "General", "settings"],
+  ["sources", "Calendar & Weather", "calendar"],
+  ["sound", "Sound & Notifications", "volume-2"],
+  ["focus", "Focus & Comfort", "moon"],
+  ["status", "Device Status", "activity"],
+  ["developer", "Developer & Demo", "code-xml"],
+];
+
+const state = {
+  data: null, tab: "glance", section: "general",
+  whyOpen: null, whyDetails: false, sheet: null, dialog: null,
+  demo: loadDemo(), diagOpen: false, techOpen: false,
+  dragging: false, lastTouch: 0, layout: null,
+};
+
+/* Demo Mode is display-only and kept in this browser, not in app settings. */
+function loadDemo() { try { return localStorage.getItem("cc.demoMode") === "on"; } catch (e) { return false; } }
+function saveDemo(on) { try { localStorage.setItem("cc.demoMode", on ? "on" : "off"); } catch (e) { /* private mode */ } }
 
 const $ = (sel) => document.querySelector(sel);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const words = (v) => esc(String(v ?? "").replace(/_/g, " "));
+const icon = (name, cls = "") => `<svg class="i ${cls}" aria-hidden="true"><use href="icons/sprite.svg#${name}"></use></svg>`;
+const pill = (tone, text, ic) => `<span class="pill ${tone}">${ic ? icon(ic) : ""}${esc(text)}</span>`;
+const modePill = (mode) => { const b = L.modeBadge(mode); return b ? pill(b.cls, b.text, b.icon) : ""; };
+
+// Replace markup only when it changed, so polling does not reset focus,
+// pressed states or open controls.
+function put(el, html) {
+  if (el && el._html !== html) { el.innerHTML = html; el._html = html; }
+}
 
 /* ------------------------------------------------------------ server */
 async function poll() {
@@ -32,8 +60,7 @@ async function act(action, payload = {}, quiet = false) {
     });
     const body = await res.json();
     if (!res.ok) { toast(body.error || "Action failed", true); return null; }
-    if (!quiet) toast(describe(action, body));
-    state.rendered = {};
+    if (!quiet) toast(describe(action, body), body.status === "blocked");
     return body;
   } catch (e) {
     toast("Could not reach the ContextCue app", true);
@@ -42,10 +69,14 @@ async function act(action, payload = {}, quiet = false) {
 }
 
 function describe(action, body) {
-  if (action.startsWith("sim_")) return action === "sim_scenario" ? "Scenario loaded" : action === "sim_advance" ? `Scenario time +${body.seconds / 60} min` : "Simulation updated";
-  if (body.status === "blocked") return `Not played: ${String(body.reason || "").replace(/_/g, " ")}`;
-  if (action === "volume") return `Volume saved (${body.volume}%). Not applied: no audio adapter yet.`;
-  return String(body.status || "Done").replace(/_/g, " ");
+  if (action === "sim_scenario") return "Scenario loaded";
+  if (action === "sim_advance") return `Scenario time moved ${L.duration(body.seconds * 1000)} ahead`;
+  if (action.startsWith("sim_")) return "Simulation updated";
+  if (body.status === "blocked") return `Not played: ${L.blockedText(body.reason)}`;
+  if (action === "volume") return `Volume saved (${body.volume}%). Not applied yet: no speech adapter.`;
+  return { acknowledged: "Marked as done", requested: "Request sent", muted: "Sound muted", unmuted: "Sound on",
+           focus_on: "Focus on", focus_off: "Focus off", stopped: "Audio stopped", ok: "Saved" }[body.status]
+    || L.cap(body.status || "Done");
 }
 
 let toastTimer;
@@ -54,334 +85,474 @@ function toast(text, error = false) {
   el.textContent = text;
   el.className = "show" + (error ? " error" : "");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (el.className = ""), 2600);
+  toastTimer = setTimeout(() => (el.className = ""), 2800);
 }
 
 /* ----------------------------------------------------------- helpers */
-function modeTag(mode) {
-  if (mode === "simulated") return '<span class="tag sim">Simulated</span>';
-  if (mode === "real") return '<span class="tag real">Real</span>';
-  return "";
-}
-function qualityTag(q, error) {
-  if (!q || q === "valid") return "";
-  const cls = q === "stale" ? "stale" : "bad";
-  return `<span class="tag ${cls}">${words(q)}</span>` + (error ? ` <span class="tag">${words(error)}</span>` : "");
-}
-function fmtTemp(c) {
-  if (c == null) return null;
-  return state.data.settings.units === "imperial" ? `${(c * 9 / 5 + 32).toFixed(1)} °F` : `${c.toFixed(1)} °C`;
-}
-function localTime(isoText) {
-  if (!isoText) return "—";
+function zone() { return state.data.settings.time_zone; }
+function units() { return state.data.settings.units; }
+
+function clockOf(iso, withSeconds = false) {
+  if (!iso) return "—";
   try {
-    return new Date(isoText).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23", timeZone: state.data.settings.time_zone });
-  } catch (e) { return isoText; }
+    return new Date(iso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", ...(withSeconds ? { second: "2-digit" } : {}), timeZone: zone() });
+  } catch (e) { return iso; }
 }
-function duration(ms) {
-  const m = Math.round(ms / 60000);
-  if (m < 60) return `${m} min`;
-  const h = Math.floor(m / 60), r = m % 60;
-  return r ? `${h} h ${r} min` : `${h} h`;
+
+function longDate(d) {
+  try {
+    return new Date(d.clock.utc).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: d.settings.time_zone });
+  } catch (e) { return d.clock.local_date; }
 }
-const CATEGORY = { morning: "Morning briefing", preparation: "Get ready", comfort: "Comfort", context_answer: "Answer" };
-const ORIGIN = { generated: "Generated", cached: "Cached", factual_fallback: "Factual fallback", status: "Status" };
-const PRIORITY = { 2: "P2 urgent", 1: "P1", 0: "P0" };
 
 /* ------------------------------------------------------------ render */
 function render() {
   const d = state.data;
   if (!d) return;
-  renderTop(d);
-  const dim = $("#dim");
-  dim.style.opacity = String(Math.max(0, (1 - d.display.screen_level) * 0.75).toFixed(2));
-  const fn = { glance: renderGlance, briefing: renderBriefing, why: renderWhy, settings: renderSettings,
-               audio: renderAudio, health: renderHealth, simulation: renderSimulation }[state.view];
-  fn(d);
+  // ?why=1 opens "Why this?" on whichever notice the backend selected.
+  if (state.whyOpen === "__selected__") state.whyOpen = d.notice ? d.notice.notice_id : null;
+  renderHeader(d);
+  $("#dim").style.opacity = String(Math.max(0, (1 - d.display.screen_level) * 0.75).toFixed(2));
+  if (state.tab === "glance") renderGlance(d);
+  else if (!state.dragging) renderSettings(d);
+  renderSheet(d);
+  renderDialog();
 }
 
-function renderTop(d) {
-  $("#time").textContent = d.clock.local_time;
-  $("#date").textContent = d.clock.local_date;
-  const label = $("#clock-label");
-  label.textContent = d.clock.label;
-  label.className = "tag " + (d.clock.mode === "simulated" ? "sim" : "real");
-  const focus = $("#chip-focus");
-  focus.textContent = d.status.focus ? "Focus on" : "Normal";
+function renderHeader(d) {
+  const frame = $("#frame");
+  frame.dataset.sky = L.skyPhase(d.clock.local_time);
+  const badges = [
+    d.gateway_mode === "simulated" ? pill("sim", "Simulated sensors", "flask-conical") : pill("real", "Real sensors", "cpu"),
+    state.demo ? pill("demo", "Demo Mode", "monitor") : "",
+  ];
+  put($("#badges"), badges.join(""));
+
+  const focus = $("#btn-focus");
+  put(focus, `${icon("moon")}<span>${d.status.focus ? "Focus on" : "Focus"}</span>`);
   focus.classList.toggle("on", d.status.focus);
-  focus.setAttribute("aria-pressed", d.status.focus);
-  const mute = $("#chip-mute");
-  mute.textContent = d.status.muted ? "Muted" : "Sound on";
+  focus.setAttribute("aria-pressed", String(d.status.focus));
+
+  const mute = $("#btn-mute");
+  put(mute, `${icon(d.status.muted ? "volume-x" : "volume-2")}<span>${d.status.muted ? "Muted" : "Sound on"}</span>`);
   mute.classList.toggle("warn", d.status.muted);
-  mute.setAttribute("aria-pressed", d.status.muted);
-  const audio = $("#chip-audio");
-  const policy = { visual_only: "Visual only", on_request: "Audio on request", automatic: "Audio automatic" }[d.status.audio_policy];
-  audio.textContent = (d.status.quiet_hours ? "Quiet hours · " : "") + policy;
-  const bad = d.health.filter((h) => !["ready", "busy"].includes(h.state));
-  const chip = $("#chip-health");
-  chip.textContent = bad.length ? `${bad.length} issue${bad.length > 1 ? "s" : ""}` : "All systems ready";
-  chip.className = "chip " + (bad.length ? "warn" : "");
+  mute.setAttribute("aria-pressed", String(d.status.muted));
+
+  const problems = d.health.filter(L.isProblem);
+  const status = $("#btn-status");
+  put(status, problems.length
+    ? `${icon("triangle-alert")}<span>${problems.length} issue${problems.length > 1 ? "s" : ""}</span>`
+    : `${icon("circle-check")}<span>All ready</span>`);
+  status.className = "hbtn " + (problems.length ? "warn" : "ok");
+  status.setAttribute("aria-label", `Device status: ${problems.length ? problems.length + " issues" : "all ready"}`);
+
+  $("#time").textContent = L.fmt12(d.clock.local_time);
+  $("#clock-label").textContent = d.clock.mode === "simulated" ? "Scenario time" : "Device time";
 }
 
-function noticeCard(n, compact = false) {
-  const tags = [
-    `<span class="tag info">${esc(CATEGORY[n.category] || n.category)}</span>`,
-    `<span class="tag">${esc(PRIORITY[n.priority])}</span>`,
-    `<span class="tag ${n.origin === "generated" ? "real" : "stale"}">${esc(ORIGIN[n.origin] || n.origin)}</span>`,
-    modeTag(n.source_mode),
-  ].join(" ");
-  const quiet = state.data.status.focus || state.data.status.muted;
-  return `<div class="notice ${n.priority >= 2 ? "p2" : ""} ${quiet ? "quiet" : ""}">
-    <div>
-      <div class="meta">${tags}<span class="tag">Expires in ${Math.ceil(n.expires_in_s / 60)} min</span></div>
-      <div class="text">${esc(n.text || "Preparing…")}</div>
-    </div>
-    <div class="actions">
-      <button class="btn" data-action="why" data-id="${esc(n.notice_id)}">Why</button>
-      <button class="btn" data-action="play" data-id="${esc(n.notice_id)}" ${n.can_play ? "" : `title="${words(n.play_blocked_reason)}"`}>Play</button>
-      <button class="btn primary" data-action="ack" data-id="${esc(n.notice_id)}">Done</button>
-    </div>
-  </div>`;
+/* ------------------------------------------------------------ glance */
+function layout(demo) {
+  if (state.layout === demo) return;
+  state.layout = demo;
+  const main = $("#col-main"), side = $("#col-side"), row = $("#row-cards");
+  const [today, comfort, weather, sensors] = ["#card-today", "#card-comfort", "#card-weather", "#card-sensors"].map($);
+  $("#glance-grid").classList.toggle("demo", demo);
+  if (demo) {
+    row.append(today, weather);
+    side.append(sensors);
+    $("#tab-glance > div[hidden]").append(comfort);
+  } else {
+    row.append(today);
+    side.append(comfort, weather);
+    $("#tab-glance > div[hidden]").append(sensors);
+  }
+  main.append(row);
 }
 
 function renderGlance(d) {
-  $("#notice-slot").innerHTML = d.notice
-    ? noticeCard(d.notice)
-    : `<div class="notice-empty">No active notice. ${d.status.focus ? "Focus is on: unsolicited briefings wait until you turn it off." : ""}</div>`;
-
-  // Calendar
-  const s = d.schedule;
-  $("#sched-tag").outerHTML = `<span id="sched-tag">${s ? modeTag(s.source_mode) : ""}</span>`;
-  let html = "";
-  if (!s) html = '<div class="empty">No calendar source</div>';
-  else if (s.quality !== "valid") html = `<div class="empty">Calendar ${words(s.quality)}</div>${qualityTag(s.quality, s.error)}`;
-  else {
-    const n = s.next_event;
-    if (n) {
-      const cls = s.urgency === "imminent" ? "imminent" : s.urgency === "soon" ? "soon" : "";
-      html += `<div class="line">Next</div><div class="big-line">${esc(n.title)}</div>
-        <div class="countdown ${cls}">${esc(n.start_local)}–${esc(n.end_local)} · in ${duration(s.next_event_in_ms)}</div>
-        ${n.location ? `<div class="line">${esc(n.location)}</div>` : ""}`;
-    } else html += '<div class="big-line">No more events today</div>';
-    if (s.current_events && s.current_events.length) html += `<div class="line">Now: <strong>${s.current_events.map((e) => esc(e.title)).join(", ")}</strong></div>`;
-    html += `<div class="line"><strong>${s.event_count}</strong> events today · <strong>${duration(s.busy_ms)}</strong> scheduled</div>`;
-    if (s.all_day.length) html += `<div class="line">All day: ${s.all_day.map(esc).join(", ")}</div>`;
-    html += `<div class="line" style="font-size:12px">${esc(s.label)}</div>`;
-  }
-  $("#sched-body").innerHTML = html;
-
-  // Indoor
-  const i = d.indoor;
-  const tile = (label, sample, fmt) => {
-    const ok = sample && sample.quality === "valid" && sample.value != null;
-    const q = sample ? sample.quality : "no data";
-    const value = ok ? `<div class="value">${fmt(sample.value)}</div>`
-      : `<div class="value na"><span class="tag ${q === "stale" ? "stale" : "bad"}">${words(q)}</span></div>`;
-    const why = !ok && sample && sample.error ? `<div class="err">${words(sample.error)}</div>` : "";
-    return `<div class="reading"><div class="label">${label}</div>${value}${why}<div class="state">${sample ? modeTag(sample.source_mode) : ""}</div></div>`;
-  };
-  const proximity = { near: "Object near", clear: "Clear", unknown: "Unknown" }[i.proximity] || i.proximity;
-  $("#indoor-body").innerHTML =
-    tile("Temperature", i.temperature, fmtTemp) +
-    tile("Humidity", i.humidity, (v) => `${v.toFixed(0)} %RH`) +
-    tile("Light", i.ambient_light, (v) => `${v.toFixed(0)} lux`) +
-    tile("Distance", i.distance, (v) => `${(v / 10).toFixed(0)} cm`) +
-    `<div class="comfort-line">Proximity: <strong>${esc(proximity)}</strong> · ${
-      !i.comfort_available ? "Comfort check paused (sensor unavailable)" :
-      i.comfort_active.length ? "Outside your comfort range: " + i.comfort_active.map(words).join(", ") : "Within your comfort range"}</div>`;
-
-  // Forecast
-  const w = d.forecast;
-  $("#wx-tag").outerHTML = `<span id="wx-tag">${w ? modeTag(w.source_mode) : ""}</span>`;
-  if (!w) $("#wx-body").innerHTML = '<div class="empty">No forecast source</div>';
-  else if (w.quality !== "valid" || !w.condition) $("#wx-body").innerHTML = `<div class="empty">Forecast ${words(w.quality)}</div>${qualityTag(w.quality, w.error)}<div class="line">Indoor readings never replace the forecast.</div>`;
-  else $("#wx-body").innerHTML = `<div class="line">Forecast · ${esc(w.location)}</div>
-    <div class="big-line">${esc(w.condition[0].toUpperCase() + w.condition.slice(1))}</div>
-    <div class="line">Rain chance <strong>${w.precipitation_probability ?? "—"}%</strong></div>
-    <div class="line">Outdoor <strong>${fmtTemp(w.temperature_c) ?? "—"}</strong></div>
-    <div class="line">${localTime(w.start).slice(0, 5)}–${localTime(w.end).slice(0, 5)} period</div>
-    <div class="line" style="font-size:12px">${esc(w.label)}</div>`;
+  $("#greeting").textContent = L.greeting(d.clock.local_time);
+  const fictional = [d.schedule, d.forecast].some((x) => x && x.source_mode === "simulated");
+  put($("#dateline"), `<span>${esc(longDate(d))}</span>${d.clock.mode === "simulated" ? `<span class="dot">·</span><span>Scenario ${esc(L.fmt12(d.clock.local_time))}</span>` : ""}${fictional ? pill("sim on-sky", "Demo data", "flask-conical") : ""}`);
+  layout(state.demo);
+  const hero = $("#hero");
+  const wasOpen = !!hero.querySelector(".why");
+  put(hero, d.notice ? heroNotice(d.notice, d) : heroUpNext(d));
+  hero.className = "hero card" + (d.notice && d.notice.priority >= 2 ? " urgent" : "");
+  // With "Why this?" open the hero takes the whole column and scrolls.
+  const why = hero.querySelector(".why");
+  $("#col-main").classList.toggle("why-open", !!why);
+  if (why && !wasOpen) why.scrollIntoView({ block: "nearest" });
+  put($("#card-today"), todayCard(d));
+  put($("#card-weather"), weatherCard(d));
+  if (state.demo) put($("#card-sensors"), sensorsCard(d));
+  else put($("#card-comfort"), comfortCard(d));
 }
 
-function renderBriefing(d) {
-  const key = JSON.stringify(d.questions);
-  if (state.rendered.questions !== key) {
-    $("#questions").innerHTML = Object.entries(d.questions)
-      .map(([id, text]) => `<button class="btn" data-action="ask" data-id="${esc(id)}">${esc(text)}</button>`).join("");
-    state.rendered.questions = key;
-  }
-  $("#notice-list").innerHTML = d.notices.length ? d.notices.map((n) => `
-    <div class="row clickable" data-action="why" data-id="${esc(n.notice_id)}">
-      <div class="head"><span>${esc(CATEGORY[n.category] || n.category)}</span>
-        <span><span class="tag">${words(n.lifecycle)}</span> <span class="tag">${esc(ORIGIN[n.origin] || n.origin)}</span> ${modeTag(n.source_mode)}</span></div>
-      <div>${esc(n.text || (n.lifecycle === "deferred" ? "Deferred by Focus" : "Preparing…"))}</div>
-      <div class="detail">${n.ended_reason ? "Ended: " + words(n.ended_reason) + " · " : ""}Created ${localTime(n.created_at)}</div>
-    </div>`).join("") : '<div class="empty">No notices yet.</div>';
-}
-
-function renderWhy(d) {
-  const n = d.notices.find((x) => x.notice_id === state.whyNotice) || d.notice;
-  if (!n) { $("#why-body").innerHTML = '<div class="notice-empty">Nothing to explain yet. Open Why from a notice.</div>'; return; }
-  const g = n.generation || {};
-  const fact = (k, v) => `<div class="fact"><div class="k">${k}</div><div class="v">${v}</div></div>`;
-  const rows = (n.evidence_detail || []).map((e) => {
-    let value = e.value;
-    if (value && typeof value === "object") {
-      value = e.metric === "schedule_today" ? `${value.event_count} events, ${duration(value.busy_ms)}` :
-        e.metric === "event" ? `${value.title} at ${value.start_local}` :
-        e.metric.startsWith("forecast") ? `${value.condition}, ${value.precipitation_probability}% rain` :
-        Array.isArray(value) ? value.join("–") : JSON.stringify(value);
-    }
-    return `<tr><td><strong>${esc(e.label)}</strong><br><span class="result">${esc(e.evidence_id)} r${e.revision}</span></td>
-      <td>${esc(value ?? "null")} ${esc(e.unit || "")}</td>
-      <td>${esc(e.source_id)}</td>
-      <td>${e.observed_at ? localTime(e.observed_at) : "—"}</td>
-      <td>${e.valid_until ? localTime(e.valid_until) : "—"}</td>
-      <td>${modeTag(e.source_mode)}</td>
-      <td>${e.quality === "valid" ? "Valid" : words(e.quality)} at use<br>${e.current_quality === "valid" ? "Valid now" : words(e.current_quality) + " now"}</td></tr>`;
-  }).join("");
-  $("#why-body").innerHTML = `
-    <div class="why-head"><div>
-      <div class="meta">${modeTag(n.source_mode)} <span class="tag info">${esc(CATEGORY[n.category])}</span> <span class="tag">${words(n.lifecycle)}</span></div>
-      <div class="why-text">${esc(n.text || "Preparing…")}</div></div>
-      <button class="btn" data-view="glance">Back</button></div>
-    <div class="facts">
-      ${fact("Text origin", esc(ORIGIN[n.origin] || n.origin))}
-      ${fact("Model request", words(n.request_outcome) + (g.reason ? ` (${words(g.reason)})` : ""))}
-      ${fact("Ran on", words(g.execution_location || "—"))}
-      ${fact("Validation", words(n.validation))}
-      ${fact("Trigger", words(n.dedupe_key.split(":")[0]))}
-      ${fact("Priority", esc(PRIORITY[n.priority]))}
-      ${fact("Created", localTime(n.created_at))}
-      ${fact("Expires", localTime(n.expires_at))}
+function heroNotice(n, d) {
+  const inMs = L.noticeEventIn(n, d.clock.utc);
+  const rel = n.priority >= 2 ? pill("bad", "Urgent", "bell")
+    : inMs != null ? pill(inMs <= 15 * 60000 ? "warn" : "info", L.until(inMs), "clock") : "";
+  const open = state.whyOpen === n.notice_id;
+  const quiet = d.status.focus ? "Focus on: no automatic sound" : d.status.muted ? "Muted: shown on screen only" : "";
+  const others = L.otherNotices(d.notices, n.notice_id);
+  const meta = [
+    pill(n.origin === "generated" ? "info" : "muted", L.ORIGIN[n.origin] || L.cap(n.origin), n.origin === "generated" ? "sparkles" : "check"),
+    ...L.provenance(n).map((p) => `<span>${esc(p)}</span>`),
+    `<span>Expires in ${Math.ceil(n.expires_in_s / 60)} min</span>`,
+    quiet ? `<span>${esc(quiet)}</span>` : "",
+  ].filter(Boolean).join('<span class="dot">·</span>');
+  return `
+    <div class="hero-top">
+      <span class="cat">${icon(L.CATEGORY_ICON[n.category] || "bell")}</span>
+      <span class="cat-label">${esc(L.CATEGORY[n.category] || L.cap(n.category))}</span>
+      ${modePill(n.source_mode)}
+      <span class="grow"></span>${rel}
     </div>
-    <table><thead><tr><th>Input</th><th>Value</th><th>Source</th><th>Observed</th><th>Valid until</th><th>Mode</th><th>Freshness</th></tr></thead>
-    <tbody>${rows || '<tr><td colspan="7">No evidence recorded.</td></tr>'}</tbody></table>
-    <div class="note">Only the inputs above are evidence. ${n.origin === "factual_fallback" ? "This text was built by code from those inputs because generation did not produce an accepted result; it is not model output." : n.origin === "generated" ? "The model's wording is not evidence; numbers in it were checked against these inputs." : ""} Times shown in ${esc(d.settings.time_zone)}. ${d.clock.mode === "simulated" ? "Calendar and forecast times follow the scenario clock; sensor times stay on the device clock." : ""}</div>`;
+    <h2 class="headline">${esc(L.noticeHeadline(n))}</h2>
+    <p class="body">${esc(n.text || (n.lifecycle === "generating" ? "Preparing…" : "No text yet"))}</p>
+    <div class="meta">${meta}</div>
+    <div class="actions">
+      <button class="btn" data-action="why" data-id="${esc(n.notice_id)}" aria-expanded="${open}">${icon("info")}Why this?${icon(open ? "chevron-up" : "chevron-down", "trail")}</button>
+      <button class="btn ${n.can_play ? "" : "soft"}" data-action="play" data-id="${esc(n.notice_id)}" ${n.can_play ? "" : `title="${esc(L.blockedText(n.play_blocked_reason))}"`}>${icon("volume-2")}Play</button>
+      <button class="btn primary" data-action="ack" data-id="${esc(n.notice_id)}">${icon("check")}Done</button>
+      ${others.length ? `<span class="grow"></span><button class="btn ghost" data-sheet="notices">${icon("bell")}${others.length} more</button>` : ""}
+    </div>
+    ${open ? whyPanel(n, d) : ""}`;
 }
 
-/* -------------------------------------------------- settings widgets */
-function seg(name, value, options) {
-  return `<div class="seg">${options.map(([v, label]) => `<button class="${String(v) === String(value) ? "on" : ""}" data-set="${name}" data-value='${esc(JSON.stringify(v))}'>${esc(label)}</button>`).join("")}</div>`;
+function whyPanel(n, d) {
+  const items = (n.evidence_detail || []).map((e) => {
+    const line = L.evidenceLine(e, units());
+    const fresh = L.evidenceFreshness(e);
+    return `<li>${icon(line.icon)}<div><div class="w-what">${esc(line.what)}: <strong>${esc(line.text)}</strong></div>
+      <div class="w-src"><span>${esc(line.where)}</span>${e.source_type === "preference" ? "" : modePill(e.source_mode)}${pill(fresh.tone, fresh.text)}${e.observed_at ? `<span>observed ${esc(clockOf(e.observed_at))}</span>` : ""}</div></div></li>`;
+  }).join("");
+  return `
+    <div class="why">
+      ${icon("lightbulb", "why-ic")}
+      <div class="why-main">
+        <h3>Why you're seeing this</h3>
+        <ul>${items || "<li>No supporting facts were recorded.</li>"}</ul>
+        <p class="why-origin">${esc(L.originSentence(n))}</p>
+        <button class="link" data-action="why-details" aria-expanded="${state.whyDetails}">${state.whyDetails ? "Hide" : "Show"} technical details</button>
+        ${state.whyDetails ? techDetails(n, d) : ""}
+      </div>
+    </div>`;
 }
-function toggle(name, value) {
-  return `<button class="toggle ${value ? "on" : ""}" data-set="${name}" data-value='${JSON.stringify(!value)}'>${value ? "On" : "Off"}</button>`;
+
+function techDetails(n, d) {
+  const g = n.generation || {};
+  const fact = (k, v) => `<div class="fact"><div class="k">${k}</div><div class="v">${esc(v)}</div></div>`;
+  const rows = (n.evidence_detail || []).map((e) => `<tr><td>${esc(e.evidence_id)} r${esc(e.revision)}</td><td>${esc(e.source_id)}</td>
+    <td>${esc(e.observed_at ? clockOf(e.observed_at, true) : "—")}</td><td>${esc(e.valid_until ? clockOf(e.valid_until, true) : "—")}</td>
+    <td>${esc(L.humanize(e.quality))} / ${esc(L.humanize(e.current_quality))}</td></tr>`).join("");
+  return `<div class="tech">
+    <div class="facts">
+      ${fact("Notice", n.notice_id)}${fact("Trigger", L.humanize(String(n.dedupe_key).split(":")[0]))}
+      ${fact("Priority", "P" + n.priority)}${fact("Lifecycle", L.humanize(n.lifecycle))}
+      ${fact("Model request", L.humanize(n.request_outcome) + (g.reason ? ` (${L.humanize(g.reason)})` : ""))}
+      ${fact("Validation", L.humanize(n.validation))}
+      ${fact("Created", clockOf(n.created_at, true))}${fact("Expires", clockOf(n.expires_at, true))}
+    </div>
+    <table><thead><tr><th>Evidence</th><th>Source</th><th>Observed</th><th>Valid until</th><th>Quality used / now</th></tr></thead><tbody>${rows}</tbody></table>
+    <p class="note">Times in ${esc(d.settings.time_zone)}. ${d.clock.mode === "simulated" ? "Calendar and forecast times follow the scenario clock; sensor times use the device clock." : ""}</p>
+  </div>`;
+}
+
+function emptyHero(ic, title, text) {
+  return `<div class="hero-empty">${icon(ic, "big-ic")}<div><h2 class="headline">${esc(title)}</h2><p class="body">${esc(text)}</p></div></div>`;
+}
+
+function heroUpNext(d) {
+  const s = d.schedule;
+  const focusNote = d.status.focus ? `<p class="note">${icon("moon")} Focus is on: briefings wait until you turn it off.</p>` : "";
+  if (!s) return emptyHero("calendar", "No calendar connected", "Choose a calendar in Settings → Calendar & Weather.") + focusNote;
+  if (s.quality !== "valid") {
+    return emptyHero("cloud-off", s.quality === "stale" ? "Calendar out of date" : "Calendar unavailable",
+      s.error ? L.cap(s.error) : "ContextCue cannot read your calendar right now.") + focusNote;
+  }
+  const n = s.next_event;
+  if (!n) {
+    return emptyHero("calendar", "No more events today", s.all_day && s.all_day.length ? `All day: ${s.all_day.join(", ")}` : "Your calendar is clear for the rest of the day.") + focusNote;
+  }
+  const tone = s.urgency === "imminent" ? "bad" : s.urgency === "soon" ? "warn" : "info";
+  return `
+    <div class="hero-top">
+      <span class="cat">${icon("calendar")}</span><span class="cat-label">Up next</span>
+      ${modePill(s.source_mode)}<span class="grow"></span>${pill(tone, L.until(s.next_event_in_ms), "clock")}
+    </div>
+    <h2 class="headline">${esc(n.title)}</h2>
+    <p class="body">${esc(L.fmt12(n.start_local))} – ${esc(L.fmt12(n.end_local))}${n.location ? ` · ${icon("map-pin", "inline")}${esc(n.location)}` : ""}</p>
+    <div class="meta"><span>${s.event_count} event${s.event_count === 1 ? "" : "s"} today</span><span class="dot">·</span><span>${esc(s.label)}</span></div>
+    ${focusNote}
+    <p class="note">No notice right now. Tap <strong>Brief me</strong> for a summary, or <strong>Ask</strong> a question.</p>`;
+}
+
+function todayCard(d) {
+  const s = d.schedule;
+  const head = `<div class="card-h">${icon("calendar")}<h3>Today</h3>${s ? modePill(s.source_mode) : ""}</div>`;
+  if (!s) return head + `<div class="state-msg">No calendar source</div>`;
+  if (s.quality !== "valid") return head + `<div class="state-msg">${pill(s.quality === "stale" ? "warn" : "bad", s.quality === "stale" ? "Out of date" : "Unavailable")}</div>${s.error ? `<div class="meta">${esc(L.cap(s.error))}</div>` : ""}`;
+  const current = new Set((s.current_events || []).map((e) => e.event_id));
+  const list = [...(s.current_events || []), ...(s.remaining_events || []).filter((e) => !current.has(e.event_id))];
+  const limit = state.demo ? 1 : 3;
+  const rows = list.slice(0, limit).map((e) => `<li class="${current.has(e.event_id) ? "now" : ""}">
+    <span class="t">${current.has(e.event_id) ? "Now" : esc(L.fmt12(e.start_local))}</span><span class="e">${esc(e.title)}</span></li>`).join("");
+  const summary = `<span class="summary"><strong>${s.event_count}</strong> event${s.event_count === 1 ? "" : "s"} · ${esc(L.duration(s.busy_ms))}</span>`;
+  if (state.demo) {
+    return `<div class="card-h">${icon("calendar")}<h3>Today</h3>${modePill(s.source_mode)}</div>${summary}
+      <ul class="events">${rows || "<li><span class=\"e\">Nothing else scheduled</span></li>"}</ul>`;
+  }
+  return `<div class="card-h">${icon("calendar")}<h3>Today</h3>${summary}${modePill(s.source_mode)}</div>
+    <ul class="events">${rows || "<li><span class=\"e\">Nothing else scheduled</span></li>"}</ul>
+    ${list.length > limit ? `<div class="meta">+${list.length - limit} more later today</div>` : ""}`;
+}
+
+function comfortCard(d) {
+  const i = d.indoor;
+  const t = L.sampleView("temperature", i.temperature, units());
+  const h = L.sampleView("humidity", i.humidity, units());
+  const c = L.comfortView(i, d.settings);
+  return `<div class="card-h">${icon("thermometer")}<h3>Room comfort</h3>${i.temperature ? modePill(i.temperature.source_mode) : ""}</div>
+    <div class="big">${t.ok ? esc(t.text) : pill(t.tone, "Temperature " + t.text.toLowerCase())}</div>
+    <div class="sub">${icon("droplet", "inline")}${h.ok ? `${esc(h.text)} humidity` : `Humidity ${esc(h.text.toLowerCase())}`}</div>
+    <div class="status ${c.tone}">${icon(c.tone === "ok" ? "leaf" : c.tone === "warn" ? "triangle-alert" : "circle-help")}${esc(c.text)}</div>`;
+}
+
+function weatherCard(d) {
+  const f = d.forecast;
+  const w = L.weatherVisual(f);
+  const head = `<div class="card-h">${icon("cloud")}<h3>Weather</h3>${f ? modePill(f.source_mode) : ""}</div>`;
+  if (!w.known) {
+    return head + `<div class="wx unknown">${icon(w.icon, "wx-ic muted")}<div class="state-msg">${esc(w.text)}</div></div>
+      <div class="meta">${f && f.error ? esc(L.cap(f.error)) + ". " : ""}Indoor readings never replace the forecast.</div>`;
+  }
+  const temp = L.fmtTemp(f.temperature_c, units());
+  return head + `<div class="wx"><div><div class="big">${temp ? esc(temp) : "—"}</div>
+      <div class="sub">${esc(w.text)}${f.precipitation_probability != null ? ` · ${f.precipitation_probability}% chance of rain` : ""}</div></div>
+      ${icon(w.icon, "wx-ic")}</div>
+    <div class="meta">${icon("map-pin", "inline")}${esc(f.location || "Location unknown")}<span class="dot">·</span>${esc(clockOf(f.start))}–${esc(clockOf(f.end))}</div>`;
+}
+
+function sensorsCard(d) {
+  const i = d.indoor;
+  const tile = (metric, ic, label) => {
+    const sample = i[metric];
+    const v = L.sampleView(metric, sample, units());
+    return `<div class="tile">
+      <div class="t-h">${icon(ic)}${esc(label)}</div>
+      <div class="t-v">${v.ok ? esc(v.text) : pill(v.tone, v.text)}</div>
+      <div class="t-m">${sample ? modePill(sample.source_mode) : ""}${!v.ok && v.reason ? `<span class="why-na" title="${esc(v.reason)}">${esc(L.humanize(v.reason))}</span>` : ""}</div>
+    </div>`;
+  };
+  const disp = d.display;
+  const pct = Math.round(disp.screen_level * 100);
+  const how = d.settings.brightness_override != null ? "Manual brightness"
+    : disp.source === "ambient_light" ? `Follows ambient light${disp.calibrated ? "" : " (uncalibrated)"}` : "Default level (no light reading)";
+  const p = L.proximityView(i.proximity);
+  const c = L.comfortView(i, d.settings);
+  const hw = d.gateway_mode !== "simulated";
+  return `<div class="card-h">${icon("activity")}<h3>Live sensor activity</h3></div>
+    <div class="sub"><span>${hw ? "Readings from the UNO Q Modulinos" : "Readings from the simulated gateway"}</span><span class="status ${c.tone}">${icon("leaf")}${esc(c.text)}</span></div>
+    <div class="tiles">
+      ${tile("temperature", "thermometer", "Temperature")}${tile("humidity", "droplet", "Humidity")}
+      ${tile("ambient_light", "sun-dim", "Ambient light")}${tile("distance", "scan", "Distance")}
+    </div>
+    <div class="bright">
+      <div class="bh"><span>${icon("gauge")}Screen brightness</span><strong>${pct}%</strong></div>
+      <div class="bar" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}" aria-label="Screen brightness"><span style="width:${pct}%"></span></div>
+      <div class="meta">${esc(how)} · on-screen dimming${disp.awake ? "" : " · screen asleep"}</div>
+    </div>
+    <div class="strip">${icon("radar")}<span>Proximity</span><span class="grow"></span>${pill(p.tone, p.text, p.icon)}</div>`;
+}
+
+/* ---------------------------------------------------------- settings */
+function seg(name, value, options) {
+  return `<div class="seg" role="group">${options.map(([v, label]) => `<button class="${String(v) === String(value) ? "on" : ""}" aria-pressed="${String(v) === String(value)}" data-set="${name}" data-value='${esc(JSON.stringify(v))}'>${esc(label)}</button>`).join("")}</div>`;
+}
+function toggle(name, value, label) {
+  return `<button class="toggle ${value ? "on" : ""}" role="switch" aria-checked="${!!value}" ${label ? `aria-label="${esc(label)}"` : ""} data-set="${name}" data-value='${JSON.stringify(!value)}'><span class="knob"></span><span>${value ? "On" : "Off"}</span></button>`;
+}
+function actionToggle(action, value, onText = "On", offText = "Off", label = "") {
+  return `<button class="toggle ${value ? "on" : ""}" role="switch" aria-checked="${!!value}" ${label ? `aria-label="${esc(label)}"` : ""} data-action="${action}"><span class="knob"></span><span>${value ? onText : offText}</span></button>`;
 }
 function stepper(name, value, step, fmt = (v) => v) {
-  return `<span class="stepper"><button data-step="${name}" data-delta="${-step}">−</button><span class="val">${esc(fmt(value))}</span><button data-step="${name}" data-delta="${step}">+</button></span>`;
+  return `<span class="stepper"><button data-step="${name}" data-delta="${-step}" aria-label="Decrease">−</button><span class="val">${esc(fmt(value))}</span><button data-step="${name}" data-delta="${step}" aria-label="Increase">+</button></span>`;
 }
 function timeStepper(name, value) {
-  return `<span class="stepper"><button data-tstep="${name}" data-delta="-30">−</button><span class="val">${esc(value)}</span><button data-tstep="${name}" data-delta="30">+</button></span>`;
+  return `<span class="stepper"><button data-tstep="${name}" data-delta="-30" aria-label="30 minutes earlier">−</button><span class="val">${esc(L.fmt12(value))}</span><button data-tstep="${name}" data-delta="30" aria-label="30 minutes later">+</button></span>`;
 }
-const field = (name, sub, control) => `<div class="field"><span class="name">${name}${sub ? `<small>${sub}</small>` : ""}</span>${control}</div>`;
+const field = (name, sub, control) => `<div class="field"><div class="name">${name}${sub ? `<small>${sub}</small>` : ""}</div><div class="ctl">${control}</div></div>`;
+const group = (title, body, ic = "") => `<section class="group"><h3>${ic ? icon(ic) : ""}${title}</h3>${body}</section>`;
+const yesNo = (v, yes = "Yes", no = "No") => v ? `<span class="yn ok">${icon("circle-check")}${yes}</span>` : `<span class="yn bad">${icon("circle-alert")}${no}</span>`;
 
 function renderSettings(d) {
+  put($("#settings-nav"), `<h2>Settings</h2>` + SECTIONS.map(([id, label, ic]) =>
+    `<button data-section="${id}" class="${state.section === id ? "on" : ""}" aria-current="${state.section === id ? "page" : "false"}">${icon(ic)}<span>${esc(label)}</span>${id === "status" && d.health.some(L.isProblem) ? `<span class="badge">${d.health.filter(L.isProblem).length}</span>` : ""}</button>`).join(""));
+  const fn = { general: secGeneral, sources: secSources, sound: secSound, focus: secFocus, status: secStatus, developer: secDeveloper }[state.section];
+  const title = SECTIONS.find((s) => s[0] === state.section);
+  put($("#settings-pane"), `<div class="pane-h">${icon(title[2])}<h2>${esc(title[1])}</h2></div>` + fn(d));
+}
+
+function secGeneral(d) {
   const s = d.settings;
-  const key = JSON.stringify(s);
-  if (state.rendered.settings === key) return;
-  state.rendered.settings = key;
-  $("#settings-body").innerHTML = `
-    <div class="group"><h3>Mode</h3>
-      ${field("Focus", "Defers unsolicited briefings and automatic speech", `<button class="toggle ${s.focus ? "on" : ""}" data-action="toggle-focus">${s.focus ? "On" : "Off"}</button>`)}
-      ${field("Speech during Focus", "Urgent preparation reminders only", toggle("focus_p2_speech", s.focus_p2_speech))}
-      ${field("Morning window", "Briefing on approach, once per day", `${timeStepper("morning_start", s.morning_start)} ${timeStepper("morning_end", s.morning_end)}`)}
-      ${field("Quiet hours", "No automatic speech or Buzzer", `${timeStepper("quiet_start", s.quiet_start)} ${timeStepper("quiet_end", s.quiet_end)}`)}
-    </div>
-    <div class="group"><h3>Comfort range</h3>
-      ${field("Lowest temperature", "", stepper("comfort_temp_min_c", s.comfort_temp_min_c, 0.5, (v) => v.toFixed(1) + " °C"))}
-      ${field("Highest temperature", "", stepper("comfort_temp_max_c", s.comfort_temp_max_c, 0.5, (v) => v.toFixed(1) + " °C"))}
-      ${field("Lowest humidity", "", stepper("comfort_rh_min", s.comfort_rh_min, 5, (v) => v.toFixed(0) + " %"))}
-      ${field("Highest humidity", "", stepper("comfort_rh_max", s.comfort_rh_max, 5, (v) => v.toFixed(0) + " %"))}
-    </div>
-    <div class="group"><h3>Display</h3>
-      ${field("Units", "", seg("units", s.units, [["metric", "°C"], ["imperial", "°F"]]))}
-      ${field("Time zone", "", seg("time_zone", s.time_zone, [["America/Chicago", "Central"], ["America/New_York", "Eastern"], ["America/Los_Angeles", "Pacific"], ["UTC", "UTC"]]))}
-      ${field("Brightness", s.brightness_override == null ? "Automatic from the Light sensor (uncalibrated)" : "Manual", seg("brightness_override", s.brightness_override ?? "auto", [["auto", "Auto"], [0.4, "40%"], [0.7, "70%"], [1, "100%"]]))}
-    </div>
-    <div class="group"><h3>Sources</h3>
-      ${field("Calendar", s.calendar_source === "fixture" ? "Fictional demo calendar" : "Live adapter not connected yet", seg("calendar_source", s.calendar_source, [["fixture", "Demo"], ["google", "Google"], ["microsoft365", "Microsoft 365"]]))}
-      ${field("Weather", s.weather_source === "fixture" ? "Fictional demo forecast" : "Live adapter not connected yet", seg("weather_source", s.weather_source, [["fixture", "Demo"], ["open_meteo", "Open-Meteo"]]))}
-      ${field("Stored data", "Notices, evidence and logs (settings kept)", `<button class="btn danger" data-action="clear-data">Clear</button>`)}
-    </div>`;
+  return group("Display", `
+    ${field("Temperature units", "", seg("units", s.units, [["metric", "°C"], ["imperial", "°F"]]))}
+    ${field("Time zone", "", seg("time_zone", s.time_zone, [["America/Chicago", "Central"], ["America/New_York", "Eastern"], ["America/Los_Angeles", "Pacific"], ["UTC", "UTC"]]))}
+    ${field("Brightness", s.brightness_override == null ? "Automatic from the Light sensor (uncalibrated). Dims the picture on screen; the panel backlight is not controlled." : "Manual level, dimmed on screen", seg("brightness_override", s.brightness_override ?? "auto", [["auto", "Auto"], [0.4, "40%"], [0.7, "70%"], [1, "100%"]]))}`, "monitor")
+    + group("Stored data", field("Notices, evidence and logs", "Clearing keeps your settings", `<button class="btn danger" data-action="clear-data">${icon("trash-2")}Clear</button>`), "database");
 }
 
-function renderAudio(d) {
-  const a = d.audio;
-  const key = JSON.stringify([a, d.status.muted, d.status.playing]);
-  if (state.rendered.audio === key || state.dragging) return;
-  state.rendered.audio = key;
-  const yes = (v) => (v ? "Yes" : "No");
-  $("#audio-body").innerHTML = `
-    <div class="group"><h3>Speech output</h3>
-      ${field("Speech engine", "", `<span>${esc(a.engine || "None selected")}</span>`)}
-      ${field("Speaker", "", `<span>${esc(a.endpoint || "None selected")}</span>`)}
-      ${field("Paired", "", `<span>${yes(a.paired)}</span>`)}
-      ${field("Connected", "", `<span>${yes(a.connected)}</span>`)}
-      ${field("Ready to play", a.reason ? words(a.reason) : "", `<span>${yes(a.ready)}</span>`)}
-      <p class="note">Playback finishing does not prove anyone heard it.</p>
-    </div>
-    <div class="group"><h3>Controls</h3>
-      ${field("Mute", "Silences speech and Buzzer; notices stay on screen", `<button class="toggle ${d.status.muted ? "on" : ""}" data-action="toggle-mute">${d.status.muted ? "Muted" : "Off"}</button>`)}
-      ${field("Speech volume", `<span id="vol-val">${a.volume}%</span>`, `<input id="volume" type="range" min="0" max="100" step="5" value="${a.volume}">`)}
-      ${field("Audio policy", "", seg("audio_policy", a.policy, [["visual_only", "Visual only"], ["on_request", "On request"], ["automatic", "Automatic"]]))}
-      ${field("Buzzer chime", "Separate opt-in, short tone only", toggle("buzzer_enabled", a.buzzer_enabled))}
-      ${field("Away announcements", "Once, only to a connected speaker", toggle("away_audio_enabled", d.settings.away_audio_enabled))}
-      ${field("Stop audio", d.status.playing ? "Playing now" : "Nothing playing", `<button class="btn" data-action="stop-audio">Stop</button>`)}
-    </div>`;
+function secSources(d) {
+  const s = d.settings, sc = d.schedule, f = d.forecast;
+  const sourceState = (x) => !x ? pill("muted", "Not configured") : x.quality === "valid" ? pill("ok", "Working", "circle-check")
+    : pill(x.quality === "stale" ? "warn" : "bad", x.quality === "stale" ? "Out of date" : "Unavailable");
+  const fixtureLoc = s.weather_source === "fixture";
+  return group("Calendar", `
+    ${field("Calendar source", s.calendar_source === "fixture" ? "Fictional demo calendar" : "Live calendar adapter not connected yet", seg("calendar_source", s.calendar_source, [["fixture", "Demo"], ["google", "Google"], ["microsoft365", "Microsoft 365"]]))}
+    ${field("Status", sc ? esc(sc.label) : "", sourceState(sc))}`, "calendar")
+    + group("Weather", `
+    ${field("Weather source", s.weather_source === "fixture" ? "Fictional demo forecast" : "Live weather adapter not connected yet", seg("weather_source", s.weather_source, [["fixture", "Demo"], ["open_meteo", "Open-Meteo"]]))}
+    ${field("Status", f ? esc(f.label) : "", sourceState(f))}`, "cloud")
+    + group("Forecast location", `
+    ${field("Location", fixtureLoc ? "Fixture city: part of the demo forecast" : "Supplied by the weather source", `<strong>${esc(f && f.location ? f.location : "Unavailable")}</strong>`)}
+    ${field("Change location", "Needs a location-capable weather service, which is not built yet. ContextCue never guesses your location.", `<button class="btn" disabled>${icon("map-pin")}Change</button>`)}`, "map-pin");
 }
 
-function renderHealth(d) {
-  $("#health-list").innerHTML = d.health.map((h) => `
-    <div class="row"><div class="head"><span>${words(h.component_id)}</span>
-      <span class="tag ${h.state === "ready" ? "real" : h.state === "degraded" || h.state === "busy" ? "stale" : "bad"}">${words(h.state)}</span></div>
-      <div class="detail">${h.reason ? esc(h.reason) : "No problem reported"}${h.execution_location ? " · " + words(h.execution_location) : ""}</div></div>`).join("") +
-    (d.startup_notes.length ? `<div class="row"><div class="head">Startup notes</div><div class="detail">${d.startup_notes.map(esc).join("<br>")}</div></div>` : "");
-  $("#diag-list").innerHTML = d.diagnostics.map((x) => {
-    const { at, kind, ...rest } = x;
-    return `<div class="row"><div class="head"><span>${esc(kind)}</span><span>${localTime(at)}</span></div><div class="detail">${esc(JSON.stringify(rest))}</div></div>`;
+function secSound(d) {
+  const a = d.audio, s = d.settings;
+  return group("Speaker and speech", `
+    ${field("Speech engine", "", `<span>${esc(a.engine || "None installed")}</span>`)}
+    ${field("Speaker", "Pair the speaker in the board's Bluetooth settings", `<span>${esc(a.endpoint || "None selected")}</span>`)}
+    ${field("Paired", "", yesNo(a.paired))}
+    ${field("Connected", "", yesNo(a.connected))}
+    ${field("Ready to play", a.reason ? esc(L.healthHint({ reason: a.reason })) : "", yesNo(a.ready))}
+    <p class="note">Finished playback does not prove anyone heard it.</p>`, "bluetooth")
+    + group("Sound", `
+    ${field("Mute", "Silences speech and the Buzzer; notices stay on screen", actionToggle("toggle-mute", d.status.muted, "Muted", "Off", "Mute"))}
+    ${field("Speech volume", `<span id="vol-val">${a.volume}%</span> · saved, applied once a speech adapter exists`, `<input id="volume" type="range" min="0" max="100" step="5" value="${a.volume}" aria-label="Speech volume">`)}
+    ${field("Audio", "When notices may be spoken", seg("audio_policy", a.policy, [["visual_only", "Visual only"], ["on_request", "On request"], ["automatic", "Automatic"]]))}
+    ${field("Buzzer chime", "Separate opt-in; one short tone only", toggle("buzzer_enabled", a.buzzer_enabled, "Buzzer chime"))}
+    ${field("Away announcements", "Once, and only to a connected speaker", toggle("away_audio_enabled", s.away_audio_enabled, "Away announcements"))}
+    ${field("Stop audio", d.status.playing ? "Playing now" : "Nothing playing", `<button class="btn" data-action="stop-audio">${icon("square")}Stop</button>`)}`, "volume-2")
+    + group("Quiet hours", field("From – to", "No automatic speech or Buzzer", `${timeStepper("quiet_start", s.quiet_start)}<span class="to">to</span>${timeStepper("quiet_end", s.quiet_end)}`), "moon-star");
+}
+
+function secFocus(d) {
+  const s = d.settings;
+  return group("Focus", `
+    ${field("Focus", "Holds unsolicited briefings and automatic speech until you turn it off", actionToggle("toggle-focus", d.status.focus, "On", "Off", "Focus"))}
+    ${field("Speech during Focus", "Urgent preparation reminders only", toggle("focus_p2_speech", s.focus_p2_speech, "Speech during Focus"))}`, "moon")
+    + group("Morning briefing", field("Window", "Briefing when you approach the desk, once per day", `${timeStepper("morning_start", s.morning_start)}<span class="to">to</span>${timeStepper("morning_end", s.morning_end)}`), "sunrise")
+    + group("Comfort range", `
+    ${field("Lowest temperature", "", stepper("comfort_temp_min_c", s.comfort_temp_min_c, 0.5, (v) => L.fmtTemp(v, s.units)))}
+    ${field("Highest temperature", "", stepper("comfort_temp_max_c", s.comfort_temp_max_c, 0.5, (v) => L.fmtTemp(v, s.units)))}
+    ${field("Lowest humidity", "", stepper("comfort_rh_min", s.comfort_rh_min, 5, (v) => v.toFixed(0) + " %"))}
+    ${field("Highest humidity", "", stepper("comfort_rh_max", s.comfort_rh_max, 5, (v) => v.toFixed(0) + " %"))}`, "thermometer");
+}
+
+function secStatus(d) {
+  const rows = [...d.health].sort((a, b) => L.isProblem(b) - L.isProblem(a)).map((h) => {
+    const v = L.healthVisual(h.state);
+    const hint = L.healthHint(h);
+    return `<div class="hrow ${v.tone}">
+      ${icon(v.icon, "h-ic")}
+      <div class="h-main"><div class="h-name">${esc(L.componentName(h.component_id))}</div>
+        ${hint ? `<div class="h-hint">${esc(hint)}</div>` : ""}
+        ${state.techOpen ? `<div class="h-tech">${esc(h.component_id)} · ${esc(h.state)}${h.reason ? " · " + esc(h.reason) : ""}${h.execution_location ? " · " + esc(L.humanize(h.execution_location)) : ""}${h.last_success_at ? " · last OK " + esc(clockOf(h.last_success_at, true)) : ""}</div>` : ""}</div>
+      ${pill(v.tone, v.text)}</div>`;
   }).join("");
+  const problems = d.health.filter(L.isProblem).length;
+  return `<div class="status-sum ${problems ? "warn" : "ok"}">${icon(problems ? "triangle-alert" : "circle-check")}<span>${problems ? `${problems} component${problems > 1 ? "s need" : " needs"} attention. Everything else keeps working.` : "Everything is working."}</span></div>`
+    + group("Components", rows + `<button class="link" data-action="tech-toggle" aria-expanded="${state.techOpen}">${state.techOpen ? "Hide" : "Show"} technical details</button>`, "activity")
+    + (d.startup_notes.length ? group("Startup notes", `<ul class="plain">${d.startup_notes.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`, "info") : "");
 }
 
-function renderSimulation(d) {
-  const s = d.simulation;
-  const key = JSON.stringify([s, d.gateway_mode]);
-  if (state.rendered.sim === key || state.dragging) return;
-  state.rendered.sim = key;
-  const v = s.values;
-  const f = s.faults;
-  const slider = (metric, label, min, max, step, unit) => field(label, `<span id="sv-${metric}">${v[metric]} ${unit}</span>`,
-    `<input type="range" data-sensor="${metric}" min="${min}" max="${max}" step="${step}" value="${v[metric]}">`);
-  const fault = (target, label) => field(label, f[target] ? words(f[target]) : "Working", `<button class="toggle ${f[target] ? "on" : ""}" data-fault="${target}" data-active="${!f[target]}">${f[target] ? "Failed" : "OK"}</button>`);
-  $("#sim-body").innerHTML = `
-    <div class="group full"><h3>Scenario <span class="tag sim">Simulated time</span></h3>
-      <p class="hint">${esc(s.scenario_description)}</p>
-      ${seg("scenario", s.scenario_id, s.scenarios.map((x) => [x.scenario_id, x.title]))}
-      ${s.time_controls ? `<div style="margin-top:10px;display:flex;gap:8px">
-        <button class="btn" data-advance="60">+1 min</button><button class="btn" data-advance="600">+10 min</button>
-        <button class="btn" data-advance="3600">+1 hour</button></div>` : ""}
-    </div>
-    ${s.sensor_controls ? `
-    <div class="group"><h3>Simulated readings <span class="tag sim">Simulated</span></h3>
-      ${slider("temperature", "Temperature", 10, 35, 0.5, "°C")}
-      ${slider("humidity", "Humidity", 10, 90, 1, "%RH")}
-      ${slider("ambient_light", "Light", 0, 1000, 10, "lux")}
-      ${slider("distance", "Distance", 100, 2000, 50, "mm")}
-      <div style="display:flex;gap:8px;margin-top:8px"><button class="btn" data-sensor-set="distance" data-value="350">Approach</button>
-      <button class="btn" data-sensor-set="distance" data-value="1200">Leave</button></div>
-    </div>
-    <div class="group"><h3>Faults</h3>
+function secDeveloper(d) {
+  const sim = d.simulation;
+  const simSensors = d.gateway_mode === "simulated";
+  const fictional = d.settings.calendar_source === "fixture" || d.settings.weather_source === "fixture";
+  const combo = `${simSensors ? "Simulated sensors" : "Real sensors"} + ${fictional ? "fictional calendar/weather" : "live calendar/weather"}`;
+  let html = group("Demo Mode", field("Demo Mode", "Adds the live sensor panel to Glance. Display only: it changes no data. Remembered on this screen only.", actionToggle("demo-toggle", state.demo, "On", "Off", "Demo Mode")), "monitor");
+
+  const scen = sim.scenarios.map((x) => `<button class="scen ${x.scenario_id === sim.scenario_id ? "on" : ""}" aria-pressed="${x.scenario_id === sim.scenario_id}" data-set="scenario" data-value='${esc(JSON.stringify(x.scenario_id))}'><strong>${esc(x.title)}</strong></button>`).join("");
+  html += group("Scenario testing", `
+    ${field("Sensor source", "Chosen when the app starts (<code>--simulated</code>). Restart the app to change it.", simSensors ? pill("sim", "Simulated gateway", "flask-conical") : pill("real", "Real UNO Q sensors", "cpu"))}
+    <div class="field col"><div class="name">Calendar and weather scenario<small>${esc(sim.scenario_description)}</small></div><div class="scens">${scen}</div></div>
+    ${sim.time_controls ? field("Scenario clock", `Now ${esc(L.fmt12(d.clock.local_time))} (simulated)`, `<span class="btns"><button class="btn" data-advance="60">+1 min</button><button class="btn" data-advance="600">+10 min</button><button class="btn" data-advance="3600">+1 hour</button></span>`) : ""}
+    <div class="combo ${simSensors ? "sim" : "real"}">${icon("circle-check")}<span>${esc(combo)}</span></div>`, "flask-conical");
+
+  if (sim.sensor_controls) {
+    const v = sim.values, f = sim.faults;
+    const slider = (metric, label, min, max, step, unit) => field(label, `<span id="sv-${metric}">${v[metric]} ${unit}</span>`,
+      `<input type="range" data-sensor="${metric}" min="${min}" max="${max}" step="${step}" value="${v[metric]}" aria-label="${esc(label)}">`);
+    const fault = (target, label) => field(label, f[target] ? esc(L.cap(f[target])) : "Working",
+      `<button class="toggle ${f[target] ? "on bad" : ""}" role="switch" aria-checked="${!!f[target]}" data-fault="${target}" data-active="${!f[target]}"><span class="knob"></span><span>${f[target] ? "Failed" : "OK"}</span></button>`);
+    html += group("Simulated readings", `
+      ${slider("temperature", "Temperature", 10, 35, 0.5, "°C")}${slider("humidity", "Humidity", 10, 90, 1, "%RH")}
+      ${slider("ambient_light", "Light", 0, 1000, 10, "lux")}${slider("distance", "Distance", 100, 2000, 50, "mm")}
+      ${field("Distance shortcuts", "", `<span class="btns"><button class="btn" data-sensor-set="distance" data-value="350">Approach</button><button class="btn" data-sensor-set="distance" data-value="1200">Leave</button></span>`)}`, "sliders-horizontal")
+      + group("Fault injection", `
       ${fault("thermo", "Thermo")}${fault("light", "Light")}${fault("distance", "Distance")}
       ${fault("bridge", "Bridge")}${fault("calendar", "Calendar source")}${fault("weather", "Weather source")}
-      ${field("MCU reboot", "New boot identity", `<button class="btn" data-fault="reboot" data-active="true">Reboot</button>`)}
-    </div>` : `<div class="group full"><h3>Real hardware</h3><p class="hint">Sensor values come from the real gateway. Only fixture time can be simulated here; sensors are never faked on the hardware path.</p></div>`}`;
+      ${field("MCU reboot", "Simulates a new boot identity", `<button class="btn" data-fault="reboot" data-active="true">${icon("refresh-cw")}Reboot</button>`)}`, "triangle-alert");
+  } else {
+    html += group("Real hardware", `<p class="note">Sensor values come from the real gateway. Only the scenario clock can be simulated; sensors are never faked on the hardware path.</p>`, "cpu");
+  }
+
+  html += group("Diagnostics", `<button class="link" data-action="diag-toggle" aria-expanded="${state.diagOpen}">${state.diagOpen ? "Hide" : "Show"} recent activity log</button>
+    ${state.diagOpen ? `<div class="diag">${d.diagnostics.map((x) => { const { at, kind, ...rest } = x; return `<div><span class="k">${esc(clockOf(at, true))} ${esc(kind)}</span> ${esc(JSON.stringify(rest))}</div>`; }).join("") || "Nothing logged yet."}</div>` : ""}`, "code-xml");
+  return html;
+}
+
+/* ------------------------------------------------------ sheets/dialog */
+function renderSheet(d) {
+  const el = $("#sheet");
+  el.hidden = !state.sheet;
+  if (!state.sheet) return;
+  const close = `<button class="icon-btn" data-close="sheet" aria-label="Close">${icon("x")}</button>`;
+  let html;
+  if (state.sheet === "ask") {
+    html = `<div class="sheet-h"><h2 id="sheet-title">${icon("sparkles")}Ask ContextCue</h2>${close}</div>
+      <p class="note">Answers use only current calendar, weather and sensor data. Other questions are not answered.</p>
+      <button class="btn primary wide" data-action="briefing">${icon("sparkles")}Brief me now</button>
+      <div class="qgrid">${Object.entries(d.questions).map(([id, text]) => `<button class="btn q" data-action="ask" data-id="${esc(id)}">${icon("circle-help")}${esc(text)}</button>`).join("")}</div>`;
+  } else {
+    const list = L.otherNotices(d.notices, d.notice && d.notice.notice_id);
+    html = `<div class="sheet-h"><h2 id="sheet-title">${icon("bell")}Other notices</h2>${close}</div>
+      <div class="nlist">${list.map((n) => `<div class="nrow">
+        <div class="n-h"><strong>${esc(L.CATEGORY[n.category] || L.cap(n.category))}</strong>${pill("muted", L.cap(n.lifecycle))}${modePill(n.source_mode)}</div>
+        <div>${esc(n.text || (n.lifecycle === "deferred" ? "Waiting until Focus is off" : "Preparing…"))}</div>
+        ${n.lifecycle === "active" ? `<button class="btn" data-action="ack" data-id="${esc(n.notice_id)}">${icon("check")}Done</button>` : ""}
+      </div>`).join("") || '<p class="note">No other notices.</p>'}</div>`;
+  }
+  put(el.firstElementChild, html);
+}
+
+function renderDialog() {
+  const el = $("#dialog");
+  el.hidden = !state.dialog;
+  if (!state.dialog) return;
+  const x = state.dialog;
+  put(el.firstElementChild, `<h2 id="dialog-title">${esc(x.title)}</h2><p>${esc(x.text)}</p>
+    <div class="actions"><button class="btn" data-close="dialog">Cancel</button><button class="btn ${x.danger ? "danger-fill" : "primary"}" data-action="dialog-ok">${esc(x.ok)}</button></div>`);
+}
+
+function confirmDialog(title, text, ok, run, danger = false) {
+  state.dialog = { title, text, ok, run, danger };
+  renderDialog();
+  $("#dialog .actions .btn:last-child").focus();
 }
 
 /* ------------------------------------------------------------ events */
-function show(view) {
-  state.view = view;
-  state.rendered = {};
-  document.querySelectorAll(".view").forEach((el) => el.classList.toggle("active", el.id === `view-${view}`));
-  document.querySelectorAll("#nav button").forEach((el) => el.classList.toggle("active", el.dataset.view === view));
+function showTab(tab) {
+  state.tab = tab;
+  $("#frame").dataset.tab = tab;
+  document.querySelectorAll(".tab").forEach((el) => el.classList.toggle("active", el.id === `tab-${tab}`));
+  document.querySelectorAll("#tabbar button").forEach((el) => {
+    el.classList.toggle("active", el.dataset.tab === tab);
+    el.setAttribute("aria-current", el.dataset.tab === tab ? "page" : "false");
+  });
   render();
 }
 
@@ -395,13 +566,31 @@ function setTimeStep(name, delta) {
   act("settings", { changes: { [name]: `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}` } });
 }
 
+async function play(id) {
+  const d = state.data;
+  const n = d.notices.find((x) => x.notice_id === id);
+  if (n && n.play_blocked_reason === "audio_policy_visual_only") {
+    confirmDialog("Audio is set to visual only", "Switch to “audio on request” and play this notice?", "Switch and play", async () => {
+      if (await act("settings", { changes: { audio_policy: "on_request" } }, true)) await act("play", { notice_id: id });
+    });
+    return;
+  }
+  return act("play", { notice_id: id });
+}
+
 document.addEventListener("click", async (ev) => {
-  const t = ev.target.closest("button, .row.clickable");
+  const t = ev.target.closest("button");
   const now = Date.now();
   if (now - state.lastTouch > 5000) { state.lastTouch = now; act("touch", {}, true); }
-  if (!t || !state.data) return;
+  // Tapping the dimmed backdrop closes a sheet.
+  if (!t && ev.target.id === "sheet") { state.sheet = null; return render(); }
+  if (!t || !state.data || t.disabled) return;
   const d = state.data;
-  if (t.dataset.view) return show(t.dataset.view);
+  if (t.dataset.tab) return showTab(t.dataset.tab);
+  if (t.dataset.goto) { state.section = t.dataset.goto; return showTab("settings"); }
+  if (t.dataset.section) { state.section = t.dataset.section; $("#settings-pane").scrollTop = 0; return render(); }
+  if (t.dataset.sheet) { state.sheet = t.dataset.sheet; return render(); }
+  if (t.dataset.close) { state[t.dataset.close] = null; return render(); }
   if (t.dataset.set) {
     let value = JSON.parse(t.dataset.value);
     if (t.dataset.set === "scenario") return act("sim_scenario", { scenario_id: value });
@@ -416,33 +605,53 @@ document.addEventListener("click", async (ev) => {
   switch (t.dataset.action) {
     case "toggle-focus": return act("focus", { enabled: !d.status.focus });
     case "toggle-mute": return act("mute", { muted: !d.status.muted });
-    case "ack": return act("acknowledge", { notice_id: t.dataset.id });
-    case "play": {
-      const n = d.notices.find((x) => x.notice_id === t.dataset.id);
-      if (n && n.play_blocked_reason === "audio_policy_visual_only") {
-        if (confirm("Audio is set to visual only. Switch to audio on request?")) {
-          await act("settings", { changes: { audio_policy: "on_request" } }, true);
-          return act("play", { notice_id: t.dataset.id });
-        }
-        return;
-      }
-      return act("play", { notice_id: t.dataset.id });
+    case "ack": {
+      const res = await act("acknowledge", { notice_id: t.dataset.id });
+      if (res && state.whyOpen === t.dataset.id) state.whyOpen = null;
+      return render();
     }
-    case "why": state.whyNotice = t.dataset.id; return show("why");
-    case "briefing": await act("briefing"); return show("glance");
-    case "ask": await act("ask", { question: t.dataset.id }); return show("glance");
+    case "play": return play(t.dataset.id);
+    case "why": state.whyOpen = state.whyOpen === t.dataset.id ? null : t.dataset.id; return render();
+    case "why-details": state.whyDetails = !state.whyDetails; return render();
+    case "briefing": state.sheet = null; render(); return act("briefing");
+    case "ask": state.sheet = null; render(); return act("ask", { question: t.dataset.id });
     case "stop-audio": return act("stop_audio");
-    case "clear-data": if (confirm("Clear stored notices, evidence and logs? Settings are kept.")) return act("clear_data");
+    case "clear-data":
+      return confirmDialog("Clear stored data?", "Notices, evidence and logs will be deleted. Your settings are kept.", "Clear data", () => act("clear_data"), true);
+    case "dialog-ok": { const run = state.dialog && state.dialog.run; state.dialog = null; render(); return run && run(); }
+    case "demo-toggle": state.demo = !state.demo; saveDemo(state.demo); toast(state.demo ? "Demo Mode on: sensor panel shown on Glance" : "Demo Mode off"); return render();
+    case "diag-toggle": state.diagOpen = !state.diagOpen; return render();
+    case "tech-toggle": state.techOpen = !state.techOpen; return render();
   }
 });
+
+document.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Escape") return;
+  if (state.dialog) state.dialog = null; else if (state.sheet) state.sheet = null; else return;
+  render();
+});
+
+// Optional starting view from the URL (screenshots, kiosk launch):
+// ?tab=settings&section=developer&demo=1&why=1&sheet=ask. Display state only;
+// a demo= value here is not saved.
+function readUrlState() {
+  const q = new URLSearchParams(location.search);
+  if (q.get("tab") === "settings") { state.tab = "settings"; }
+  if (SECTIONS.some((s) => s[0] === q.get("section"))) state.section = q.get("section");
+  if (q.has("demo")) state.demo = q.get("demo") === "1";
+  if (q.get("why") === "1") state.whyOpen = "__selected__";
+  if (q.get("details") === "1") state.whyDetails = true;
+  if (["ask", "notices"].includes(q.get("sheet"))) state.sheet = q.get("sheet");
+  showTab(state.tab);
+}
 
 document.addEventListener("pointerdown", (ev) => { if (ev.target.type === "range") state.dragging = true; });
 document.addEventListener("pointerup", () => { state.dragging = false; });
 document.addEventListener("input", (ev) => {
   if (ev.target.id === "volume") $("#vol-val").textContent = `${ev.target.value}%`;
   if (ev.target.dataset.sensor) {
-    const units = { temperature: "°C", humidity: "%RH", ambient_light: "lux", distance: "mm" };
-    $(`#sv-${ev.target.dataset.sensor}`).textContent = `${ev.target.value} ${units[ev.target.dataset.sensor]}`;
+    const u = { temperature: "°C", humidity: "%RH", ambient_light: "lux", distance: "mm" };
+    $(`#sv-${ev.target.dataset.sensor}`).textContent = `${ev.target.value} ${u[ev.target.dataset.sensor]}`;
   }
 });
 document.addEventListener("change", (ev) => {
@@ -451,4 +660,5 @@ document.addEventListener("change", (ev) => {
   if (ev.target.dataset.sensor) act("sim_sensor", { metric: ev.target.dataset.sensor, value: Number(ev.target.value) }, true);
 });
 
+readUrlState();
 poll();

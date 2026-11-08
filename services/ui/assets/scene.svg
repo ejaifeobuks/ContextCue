@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 120" preserveAspectRatio="none">
+  <!-- ContextCue header hills. Original artwork for this project. -->
+  <path d="M0 88 C120 60 220 58 330 78 C430 96 520 70 640 52 C760 34 880 44 1024 70 V120 H0 Z" fill="#5f9e86" fill-opacity=".55"/>
+  <path d="M0 104 C160 80 300 84 430 98 C560 112 690 78 820 70 C910 65 980 74 1024 82 V120 H0 Z" fill="#3f7f68" fill-opacity=".75"/>
+  <path d="M0 116 C200 104 380 108 560 114 C740 120 880 104 1024 100 V120 H0 Z" fill="#2f6553"/>
+</svg>
