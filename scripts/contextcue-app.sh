@@ -8,7 +8,10 @@
 #   scripts/contextcue-app.sh status        list running App Lab apps
 #   scripts/contextcue-app.sh logs          follow the app's Python logs
 #   scripts/contextcue-app.sh url           print the UI address (inside the board)
-#   scripts/contextcue-app.sh kiosk         open the UI full screen on the board display
+#   scripts/contextcue-app.sh kiosk [--wait SECONDS]
+#                                           open the UI full screen on the board display
+#   scripts/contextcue-app.sh autostart on|off|status
+#                                           start the app and the kiosk at every boot
 #
 # App Lab mounts only an app's own folder into its container, so the code the
 # app needs (services/, the hardware gateway, the firmware sketch) is copied
@@ -17,13 +20,16 @@
 # to deploy uncommitted work over SSH). The app folder defaults to
 # ~/ArduinoApps/contextcue; override with CONTEXTCUE_APP_DIR. A build replaces
 # only app.yaml, README.md, python/ and sketch/: data/ (settings, notices) and
-# App Lab's .cache/ are kept.
+# App Lab's .cache/ are kept. Keep the clone outside ~/ArduinoApps, or App Lab
+# lists the apps inside it as extra apps.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEMPLATE="$ROOT/apps/contextcue"
 APP_DIR="${CONTEXTCUE_APP_DIR:-$HOME/ArduinoApps/contextcue}"
 UI_PORT=7000
+KIOSK_PROFILE="$HOME/.config/contextcue-kiosk"
+AUTOSTART_DIR="$HOME/.config/autostart"
 
 die() { echo "contextcue-app: $*" >&2; exit 1; }
 
@@ -82,12 +88,81 @@ need_app_cli() {
   command -v arduino-app-cli >/dev/null || die "arduino-app-cli not found: run this on the UNO Q"
 }
 
-ui_address() {  # IP of the running app container; the port is not published on the board
-  local id
+app_url() {  # the running app container's UI; App Lab does not publish the port
+  local id address
   id="$(docker ps -q --filter label=cc.arduino.app.main=true \
                      --filter "label=cc.arduino.app.path=$APP_DIR" | head -n 1)"
-  [ -n "$id" ] || die "ContextCue is not running (scripts/contextcue-app.sh run)"
-  docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$id"
+  [ -n "$id" ] || return 1
+  address="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$id")"
+  [ -n "$address" ] || return 1
+  echo "http://$address:$UI_PORT"
+}
+
+kiosk() {
+  local wait_s=0 url="" deadline prefs
+  if [ "${1:-}" = "--wait" ]; then wait_s="${2:-600}"; fi
+  export DISPLAY="${DISPLAY:-:0}"
+  deadline=$((SECONDS + wait_s))
+  # At boot App Lab starts the app after the desktop is up: wait until it answers.
+  until url="$(app_url)" && curl -sf -o /dev/null --max-time 2 "$url/api/state"; do
+    [ "$SECONDS" -lt "$deadline" ] || die "ContextCue is not running (scripts/contextcue-app.sh run)"
+    sleep 3
+  done
+  # A kiosk must not blank or lock: unlocking needs a keyboard.
+  xset s off s noblank -dpms 2>/dev/null || true
+  pkill -x light-locker 2>/dev/null || true
+  # Replace an earlier kiosk window. Its profile is only ever closed by killing
+  # Chromium, so mark it cleanly closed; otherwise Chromium opens with a
+  # "restore pages" bubble over the UI.
+  if pkill -f -- "--user-data-dir=$KIOSK_PROFILE" 2>/dev/null; then sleep 1; fi
+  prefs="$KIOSK_PROFILE/Default/Preferences"
+  if [ -f "$prefs" ]; then
+    sed -i 's/"exit_type":"[A-Za-z]*"/"exit_type":"Normal"/; s/"exited_cleanly":false/"exited_cleanly":true/' "$prefs"
+  fi
+  nohup chromium --user-data-dir="$KIOSK_PROFILE" --kiosk --noerrdialogs --disable-infobars \
+    --no-first-run --disable-session-crashed-bubble --disable-features=Translate \
+    --password-store=basic --check-for-update-interval=31536000 \
+    --overscroll-history-navigation=0 "$url" >/dev/null 2>&1 &
+  echo "Opened $url on display $DISPLAY"
+}
+
+write_desktop_entry() {  # write_desktop_entry FILE LINE...: a minimal XDG autostart entry
+  local file="$1"
+  shift
+  { echo "[Desktop Entry]"; echo "Type=Application"; printf '%s\n' "$@"; } > "$file"
+}
+
+autostart() {
+  local entry="$AUTOSTART_DIR/contextcue-kiosk.desktop"
+  local locker="$AUTOSTART_DIR/light-locker.desktop"
+  need_app_cli
+  case "${1:-status}" in
+    on)
+      [ -f "$APP_DIR/app.yaml" ] || die "build the app first: scripts/contextcue-app.sh run"
+      # App Lab's default app starts at every boot.
+      arduino-app-cli properties set default "$APP_DIR"
+      mkdir -p "$AUTOSTART_DIR"
+      write_desktop_entry "$entry" "Name=ContextCue kiosk" \
+        "Comment=Show ContextCue full screen once the app answers (scripts/contextcue-app.sh)" \
+        "Exec=$ROOT/scripts/contextcue-app.sh kiosk --wait 600"
+      # Hide the system lock screen for this user: on a touchscreen kiosk it
+      # would ask for a password nobody can type.
+      write_desktop_entry "$locker" "Name=Light Locker" "Hidden=true"
+      echo "At boot: App Lab starts $APP_DIR; the desktop opens the kiosk when it answers."
+      ;;
+    off)
+      arduino-app-cli properties set default none
+      rm -f "$entry" "$locker"
+      echo "Autostart off: no default app, no kiosk at login, lock screen restored."
+      ;;
+    status)
+      arduino-app-cli properties get default
+      if [ -f "$entry" ]; then echo "Kiosk at login: on ($entry)"; else echo "Kiosk at login: off"; fi
+      ;;
+    *)
+      die "usage: scripts/contextcue-app.sh autostart on|off|status"
+      ;;
+  esac
 }
 
 case "${1:-}" in
@@ -118,16 +193,16 @@ case "${1:-}" in
     arduino-app-cli app logs "$APP_DIR" --follow
     ;;
   url)
-    echo "http://$(ui_address):$UI_PORT"
+    app_url || die "ContextCue is not running (scripts/contextcue-app.sh run)"
     ;;
   kiosk)
-    url="http://$(ui_address):$UI_PORT"
-    DISPLAY="${DISPLAY:-:0}" nohup chromium --kiosk --noerrdialogs --disable-infobars "$url" \
-      >/dev/null 2>&1 &
-    echo "Opened $url on display ${DISPLAY:-:0}"
+    kiosk "${2:-}" "${3:-}"
+    ;;
+  autostart)
+    autostart "${2:-status}"
     ;;
   *)
-    sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
     ;;
 esac
