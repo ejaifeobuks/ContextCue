@@ -30,6 +30,10 @@ log = logging.getLogger("contextcue.app")
 
 POLL_S = 0.1
 SLOW_TICK_S = 1.0
+# The MCU output lease lasts 3 s; renewing once a second is enough (as
+# HardwareGateway.heartbeat documents). The slow tick runs on every poll while
+# an object is near, which would otherwise renew it 10 times a second.
+HEARTBEAT_S = 1.0
 WAKE_TIMEOUT_S = 120.0
 EVIDENCE_SAVE_S = 30.0
 RETENTION_S = 3600.0
@@ -75,6 +79,7 @@ class ContextCueApp:
         self._last_input = clock.monotonic()
         self._last_wake = clock.monotonic()
         self._lease: HealthState | None = None
+        self._last_heartbeat: float | None = None
         self._gateway_error: str | None = None
         self._state: GatewayState | None = None
         self.started_at = iso(clock.now())
@@ -157,11 +162,13 @@ class ContextCueApp:
                     if nid == notice.notice_id:
                         self.recommender.cancel(request_id)
                         del self._pending[request_id]
-        try:
-            self._lease = await self.gateway.heartbeat(self.notifications.session_id)
-        except Exception as exc:
-            self._lease = HealthState("output_lease", "unavailable", str(exc), None)
         mono = self.clock.monotonic()
+        if self._last_heartbeat is None or mono - self._last_heartbeat >= HEARTBEAT_S:
+            self._last_heartbeat = mono
+            try:
+                self._lease = await self.gateway.heartbeat(self.notifications.session_id)
+            except Exception as exc:
+                self._lease = HealthState("output_lease", "unavailable", str(exc), None)
         if self._last_save is None or mono - self._last_save >= EVIDENCE_SAVE_S:
             self._last_save = mono
             self.repo.save_evidence([e.to_dict() for e in self.engine.evidence.values()

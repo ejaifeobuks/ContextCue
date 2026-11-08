@@ -57,6 +57,15 @@ OUTPUTS_MIN_FIRMWARE = (0, 2, 0)  # firmware that implements cc_out/cc_lease/cc_
 _ID = re.compile(r"[A-Za-z0-9_-]{1,32}")
 _REMEMBERED_COMMAND_IDS = 256
 
+# Seconds between reads of each RPC. The MCU samples Thermo at 1 Hz, Light at
+# 5 Hz and Distance at 10 Hz, so reading faster only fetches the same sample
+# again over the 115200-baud Bridge link. These intervals cut the traffic from
+# about 40 to about 17 RPC/s at a 10 Hz poll.
+DEFAULT_READ_INTERVALS = {"thermo": 1.0, "light": 0.2, "distance": 0.1, "outputs": 1.0}
+# A poll arriving this early still counts as due, so a 10 Hz caller with a
+# little jitter keeps reading Distance at 10 Hz rather than 5 Hz.
+_DUE_TOLERANCE_S = 0.02
+
 
 def _firmware_tuple(version: str) -> tuple[int, ...]:
     try:
@@ -180,6 +189,7 @@ class HardwareGateway:
         *,
         clock: Clock | None = None,
         rpc_timeout: float = 0.75,
+        read_intervals: dict[str, float] | None = DEFAULT_READ_INTERVALS,
     ):
         if not math.isfinite(rpc_timeout) or not 0 < rpc_timeout <= 1:
             raise ValueError("rpc_timeout must be between 0 and 1 second")
@@ -206,6 +216,18 @@ class HardwareGateway:
         self._command_session: str | None = None
         self._sent_ids: deque[str] = deque(maxlen=_REMEMBERED_COMMAND_IDS)
         self._lease_session: str | None = None
+        # None or {} reads every module on every read_state() call.
+        self._intervals = dict(read_intervals or {})
+        self._next_due: dict[str, float] = {}
+
+    def _due(self, name: str, now: float) -> bool:
+        interval = self._intervals.get(name, 0.0)
+        if interval <= 0:
+            return True
+        if now < self._next_due.get(name, -math.inf) - _DUE_TOLERANCE_S:
+            return False
+        self._next_due[name] = now + interval
+        return True
 
     async def _rpc(self, method: str, *args: object) -> dict:
         raw = await asyncio.to_thread(
@@ -322,12 +344,18 @@ class HardwareGateway:
             self._ensure_open()
             try:
                 if self._needs_discovery:
+                    self._next_due = {}  # read everything after a handshake
                     await self._discover()
-                reads = (
-                    ("thermo", "cc_read"),
-                    ("light", "cc_read_light"),
-                    ("distance", "cc_read_distance"),
+                now = self._clock.monotonic()
+                reads = tuple(
+                    (module_id, method) for module_id, method in (
+                        ("thermo", "cc_read"),
+                        ("light", "cc_read_light"),
+                        ("distance", "cc_read_distance"),
+                    ) if self._due(module_id, now)
                 )
+                if not reads:
+                    return self._state()
                 errors = []
                 for module_id, method in reads:
                     error = await self._read_module(module_id, method)
@@ -341,7 +369,7 @@ class HardwareGateway:
                 self._last_success = _timestamp(self._clock.utcnow())
                 self._last_success_monotonic = end
                 self._health = HealthState("bridge", "ready", None, self._last_success)
-                if self._outputs_supported:
+                if self._outputs_supported and self._due("outputs", self._clock.monotonic()):
                     await self._refresh_outputs()
             except Exception as exc:
                 self._mark_failed(await self._diagnose(exc))
@@ -349,6 +377,8 @@ class HardwareGateway:
 
     async def _refresh_outputs(self) -> None:
         """Read cc_read_outputs; failures affect output health only."""
+        if self._intervals.get("outputs", 0) > 0:  # a handshake read counts too
+            self._next_due["outputs"] = self._clock.monotonic() + self._intervals["outputs"]
         try:
             data = await self._rpc("cc_read_outputs")
             self._outputs = self._decode_outputs(data)

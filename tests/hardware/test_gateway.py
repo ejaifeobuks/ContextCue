@@ -108,11 +108,58 @@ class TestPeer:
         self.closed = True
 
 
+class ReadRateTests(unittest.IsolatedAsyncioTestCase):
+    """Default intervals keep Bridge load near the MCU's own sampling rates."""
+
+    async def test_default_intervals_match_mcu_sampling_rates(self):
+        peer = TestPeer()
+        peer.info["fw"] = "0.2.1"
+        clock = TestClock()
+        gateway = HardwareGateway(peer, clock=clock)
+        try:
+            for _ in range(20):  # two seconds of 10 Hz polling, with jitter
+                await gateway.read_state()
+                clock.now += 0.099
+            counts = {}
+            for method, _, _ in peer.calls:
+                counts[method] = counts.get(method, 0) + 1
+            self.assertEqual(counts["cc_open"], 1)
+            self.assertEqual(counts["cc_read_distance"], 20)  # 10 Hz kept despite jitter
+            self.assertEqual(counts["cc_read_light"], 10)     # 5 Hz
+            self.assertEqual(counts["cc_read"], 2)            # 1 Hz
+            self.assertEqual(counts["cc_read_outputs"], 2)    # 1 Hz
+            # Previously every poll sent all four reads: 80 RPCs instead of 35.
+            self.assertLessEqual(len(peer.calls), 36)
+            state = await gateway.read_state()
+            self.assertEqual({h.component_id: h.state for h in state.health}["bridge"], "ready")
+        finally:
+            await gateway.close()
+
+    async def test_a_new_handshake_reads_every_module_at_once(self):
+        peer = TestPeer()
+        clock = TestClock()
+        gateway = HardwareGateway(peer, clock=clock)
+        try:
+            await gateway.read_state()
+            peer.failure = TimeoutError("Request 'cc_read_distance' timed out")
+            clock.now += 0.1
+            await gateway.read_state()
+            peer.failure = None
+            peer.calls.clear()
+            clock.now += 0.1
+            await gateway.read_state()
+            methods = [m for m, _, _ in peer.calls]
+            self.assertEqual(methods[0], "cc_open")
+            self.assertTrue({"cc_read", "cc_read_light", "cc_read_distance"} <= set(methods))
+        finally:
+            await gateway.close()
+
+
 class GatewayTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.peer = TestPeer()
         self.clock = TestClock()
-        self.gateway = HardwareGateway(self.peer, clock=self.clock)
+        self.gateway = HardwareGateway(self.peer, clock=self.clock, read_intervals=None)
 
     async def asyncTearDown(self):
         await self.gateway.close()
@@ -398,7 +445,7 @@ class OutputGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.peer = TestPeer()
         self.peer.info["fw"] = "0.2.0"
         self.clock = TestClock()
-        self.gateway = HardwareGateway(self.peer, clock=self.clock)
+        self.gateway = HardwareGateway(self.peer, clock=self.clock, read_intervals=None)
         await self.gateway.read_state()  # handshake
 
     async def asyncTearDown(self):
@@ -528,7 +575,7 @@ class OutputGatewayTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_old_firmware_has_no_outputs(self):
         peer = TestPeer()  # firmware 0.1.0
-        gateway = HardwareGateway(peer, clock=self.clock)
+        gateway = HardwareGateway(peer, clock=self.clock, read_intervals=None)
         state = await gateway.read_state()
         self.assertNotIn("pixels", {h.component_id for h in state.health})
         result = await gateway.execute(command())
