@@ -3,30 +3,38 @@
 #include <cstdint>
 #include <functional>
 
+#include <Wire.h>
+
 inline bool thermoReachable = true;
 inline float testTemperature = 25.75f;
 inline float testHumidity = 65.52f;
-inline bool distanceReachable = true;
 inline bool distanceHasNewSample = true;
 inline int testDistanceMillimeters = 430;
 inline int distanceBeginCalls = 0;
 inline std::function<void(const char*)> duringAcquisition;
 
-inline bool pixelsReachable = true;
-inline bool buzzerReachable = true;
+// The bus the firmware hands to Modulino.begin(); drivers use it as on the board.
+inline arduino::ZephyrI2C* testBus = nullptr;
+// Times the stub driver hit its safety cap: on the board it would hang forever.
+inline int testDriverHangs = 0;
 
-// Qwiic bus: address probes for Distance, Pixels (0x36) and Buzzer (0x1E).
-struct TestWire {
-  int address = -1;
-  void beginTransmission(int value) { address = value; }
-  int endTransmission() {
-    if (address == 0x29 && !distanceReachable) return 2;
-    if (address == 0x36 && !pixelsReachable) return 2;
-    if (address == 0x1E && !buzzerReachable) return 2;
-    return 0;
-  }
-};
-inline TestWire Wire1;
+// Mirrors STM32duino VL53L4CD 1.0.5 platform.cpp: the register write is
+// retried with `while (status != 0)` and no limit, then the data is read.
+inline bool distanceRegisterRead() {
+  long attempts = 0;
+  uint8_t status;
+  do {
+    testBus->beginTransmission(0x29);
+    const uint8_t reg[2] = {0x00, 0x31};
+    testBus->write(reg, 2);
+    status = testBus->endTransmission(false);
+    if (++attempts > 100000) {
+      ++testDriverHangs;
+      return false;
+    }
+  } while (status != 0);
+  return testBus->requestFrom(0x29, 1) == 1;
+}
 
 // Output modules record what reached the "hardware" in globals, because the
 // firmware's instances are private to OutputController.cpp.
@@ -62,7 +70,13 @@ struct ModulinoBuzzer {
   void noTone() { ++testNoToneCalls; }
 };
 
-struct TestModulino { void begin(TestWire&) {} };
+struct TestModulino {
+  void begin(arduino::ZephyrI2C& wire) {
+    testBus = &wire;
+    wire.begin();
+    wire.setClock(100000);
+  }
+};
 inline TestModulino Modulino;
 
 struct ModulinoThermo {
@@ -80,17 +94,41 @@ struct ModulinoThermo {
   }
 };
 
+namespace contextcue { int divideByZeroTrapOffDepth(); }
+
+inline bool lightReachable = false;  // most tests run without a Light module
+inline int testLightRaw = 120;       // raw ALS count; 0 in darkness
+// Dark readings taken with the divide-by-zero trap on: each one halts the
+// real MCU (UsageFault in Arduino_LTR381RGB getALS, `ir / rawlux`).
+inline int testDivideByZeroFaults = 0;
+
 struct ModulinoLight {
-  bool begin() { return false; }
-  bool update() { return false; }
-  int getAL() { return 0; }
+  int lux = 0;
+  bool begin() { return lightReachable; }
+  bool update() {
+    if (!lightReachable) return false;
+    if (testLightRaw == 0 && contextcue::divideByZeroTrapOffDepth() == 0) {
+      ++testDivideByZeroFaults;
+      return false;
+    }
+    lux = testLightRaw == 0 ? 0 : testLightRaw / 2;
+    return true;
+  }
+  int getAL() { return lux; }
 };
 
 struct ModulinoDistance {
   bool begin() {
     ++distanceBeginCalls;
-    return distanceReachable;
+    // Like the library: address probe, then InitSensor's register accesses.
+    testBus->beginTransmission(0x29);
+    if (testBus->endTransmission() != 0) return false;
+    distanceRegisterRead();
+    return true;
   }
-  bool available() { return distanceHasNewSample; }
+  bool available() {
+    distanceRegisterRead();  // checkForDataReady / getResult
+    return distanceHasNewSample;
+  }
   int get() { return testDistanceMillimeters; }
 };

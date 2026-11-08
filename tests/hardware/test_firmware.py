@@ -113,6 +113,46 @@ class FirmwareSnapshotTests(unittest.TestCase):
         # regardless of timeouts, out-of-range results or 1000+ stress polls.
         self.assertEqual(self.records["distance_begin_calls"]["count"], 2)
 
+    def test_distance_driver_retry_loop_cannot_freeze_the_mcu(self):
+        # The VL53L4CD driver retries a NACKed register access forever. On the
+        # board that froze loop() and, through provide_safe, every Bridge RPC.
+        guard = self.records["bus_guard"]
+        self.assertEqual(guard["driver_hangs"], 0)
+        self.assertGreaterEqual(guard["distance_bus_faults"], 2)
+        for label in ("distance_bus_fault", "distance_bus_fault_again"):
+            fault = self.records[f"{label}_distance_after"]
+            self.assertEqual((fault["q"], fault["err"], fault["mm"]),
+                             ("unavailable", "distance_bus_error", None))
+            # Thermo keeps working while Distance is faulty.
+            self.assertEqual(self.records[f"{label}_after"]["q"], "valid")
+        recovered = self.records["distance_bus_recovered_distance_after"]
+        self.assertEqual((recovered["q"], recovered["mm"]), ("valid", 425))
+
+    def test_darkness_reads_zero_lux_instead_of_halting_the_mcu(self):
+        # Arduino_LTR381RGB divides by the raw ALS count, 0 in darkness; with
+        # Zephyr's divide-by-zero trap on, that halted the MCU (8 Nov 2026).
+        guard = self.records["light_dark_guard"]
+        self.assertEqual(guard["faults"], 0)
+        self.assertEqual(guard["depth_after"], 0)  # trap restored after each read
+        # loop() publishes before it reads Light, so each record shows the
+        # reading taken in the previous pass.
+        for label, expected in (("light_dark", 60), ("light_dark_again", 0),
+                                ("light_relit", 0), ("light_relit_again", 150)):
+            sample = self.records[f"{label}_light"]
+            self.assertEqual((sample["q"], sample["lux"]), ("valid", expected), label)
+
+    def test_held_bus_pauses_acquisition_and_resumes(self):
+        held = self.records["bus_held_distance"]
+        self.assertEqual((held["q"], held["err"]), ("unavailable", "i2c_bus_stalled"))
+        self.assertEqual(self.records["bus_held_state"]["err"], "i2c_bus_stalled")
+        # Inside the pause no transfer is attempted, so loop() stays fast and
+        # RPCs keep being served.
+        self.assertEqual(self.records["bus_pause"]["transfers"], 0)
+        self.assertGreaterEqual(self.records["bus_guard"]["bus_stalls"], 1)
+        self.assertEqual(self.records["bus_released_state"]["q"], "valid")
+        released = self.records["bus_released_distance"]
+        self.assertEqual(released["q"], "valid")
+
     def test_sensor_rpc_responses_are_compact_and_independent(self):
         light = self.records["initial_light"]
         distance = self.records["distance_after"]
@@ -151,7 +191,7 @@ class FirmwareSnapshotTests(unittest.TestCase):
         # By then a completed Distance reading has been published.
         later = self.records["final_recovery_open_begin"]
         self.assertEqual((later["light"], later["distance"]), (False, True))
-        self.assertEqual(initial["fw"], "0.2.0")
+        self.assertEqual(initial["fw"], "0.2.3")
 
     def test_concurrent_publication_preserves_sequence_content_and_uptime(self):
         self.assertGreaterEqual(len(self.stress), 1000)

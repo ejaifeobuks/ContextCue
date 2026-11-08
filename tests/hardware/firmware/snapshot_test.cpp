@@ -53,7 +53,62 @@ void acquire(const std::string& label) {
   loop();
   duringAcquisition = {};
   emit(label + "_after", readState());
+  emit(label + "_light", readLightState());
   emitDistance(label + "_distance_after");
+}
+
+// I2C fault containment (BusGuard). On the board, the first scenario froze
+// loop() inside the Distance driver's unbounded retry, and with it every RPC.
+void testBusFaults() {
+  // The Distance sensor ACKs its address but NACKs register transfers.
+  distanceRegisterFault = true;
+  acquire("distance_bus_fault");  // returns at all: the driver loop was broken
+  acquire("distance_bus_fault_again");
+  distanceRegisterFault = false;
+  acquire("distance_bus_recovered");
+
+  // Something holds the bus: every transfer times out after 500 ms.
+  busHeld = true;
+  testUptime += 1000;
+  loop();  // slow transfers happen here...
+  testUptime += 100;
+  loop();  // ...and the next sensor step pauses acquisition
+  emit("bus_held_state", readState());
+  emitDistance("bus_held_distance");
+  const long before = testTransfers;
+  const int64_t pausedAt = testUptime.load();
+  testUptime += 500;
+  loop();
+  testUptime += 500;
+  loop();
+  std::cout << "bus_pause\t{\"transfers\":" << (testTransfers - before)
+            << ",\"elapsed_ms\":" << (testUptime.load() - pausedAt - 1000) << "}\n";
+  busHeld = false;
+  testUptime += 3000;
+  loop();
+  testUptime += 1000;
+  loop();
+  emit("bus_released_state", readState());
+  emitDistance("bus_released_distance");
+  std::cout << "bus_guard\t{\"driver_hangs\":" << testDriverHangs
+            << ",\"distance_bus_faults\":" << sensors.distanceBusFaults()
+            << ",\"bus_stalls\":" << sensors.busStalls() << "}\n";
+}
+
+// Darkness used to halt the MCU: the Light library divides by the raw count.
+void testDarkLight() {
+  lightReachable = true;
+  testLightRaw = 120;
+  acquire("light_lit");
+  testLightRaw = 0;
+  acquire("light_dark");
+  acquire("light_dark_again");
+  testLightRaw = 300;
+  acquire("light_relit");
+  acquire("light_relit_again");
+  lightReachable = false;
+  std::cout << "light_dark_guard\t{\"faults\":" << testDivideByZeroFaults
+            << ",\"depth_after\":" << contextcue::divideByZeroTrapOffDepth() << "}\n";
 }
 
 // What physically reached the stub Pixels/Buzzer since boot.
@@ -206,6 +261,8 @@ int main() {
   }
   publishedState = good;
 
+  testBusFaults();
+  testDarkLight();
   testOutputs();
 
   // Cross the old millis() wrap boundary while callbacks and publication race.

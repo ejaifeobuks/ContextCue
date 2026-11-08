@@ -3,6 +3,7 @@
 #include <Arduino_Modulino.h>
 #include <stdint.h>
 
+#include "../Config.h"
 #include "SensorReadings.h"
 
 namespace contextcue {
@@ -38,10 +39,17 @@ class SensorController {
   void reportDistanceFailure(const char* quality, const char* error,
                              bool disconnected = false);
 
+  // I2C fault containment counters (diagnostics and host tests).
+  uint32_t busStalls() const { return busStalls_; }
+  uint32_t distanceBusFaults() const { return distanceBusFaults_; }
+
  private:
   ModulinoThermo thermo_;
   ModulinoLight light_;
   ModulinoDistance distance_;
+
+  bool beginDistance(uint64_t now);
+  bool busStalled(uint64_t now);
   bool thermoInitialized_ = false;
   bool lightInitialized_ = false;
   bool distanceInitialized_ = false;
@@ -59,6 +67,12 @@ class SensorController {
   uint64_t lastLightAttempt_ = 0;
   bool distanceAttempted_ = false;
   uint64_t lastDistanceAttempt_ = 0;
+  bool distanceBusFault_ = false;
+  uint64_t distanceRetryAt_ = 0;
+  uint64_t distanceBeginRetryAt_ = 0;
+  uint32_t distanceBeginBackoffMs_ = kDistanceFaultBackoffMs;
+  uint32_t busStalls_ = 0;
+  uint32_t distanceBusFaults_ = 0;
 };
 
 }  // namespace contextcue

@@ -3,6 +3,9 @@
 #include <math.h>
 
 #include "../Config.h"
+#include "../Uptime.h"
+#include "DivideByZeroTrap.h"
+#include "QwiicBus.h"
 
 namespace contextcue {
 namespace {
@@ -10,17 +13,18 @@ namespace {
 // Address-only I2C probe on the Qwiic bus; the same check
 // ModulinoDistance::begin() starts with, without its allocation/reset.
 bool distanceResponds() {
-  Wire1.beginTransmission(kDistanceI2cAddress);
-  return Wire1.endTransmission() == 0;
+  qwiicBus().beginTransmission(kDistanceI2cAddress);
+  return qwiicBus().endTransmission() == 0;
 }
 
 }  // namespace
 
 void SensorController::begin() {
-  Modulino.begin(Wire1);
+  // Every Modulino driver talks through the guarded Qwiic bus.
+  Modulino.begin(qwiicBus());
   thermoInitialized_ = thermo_.begin();
   lightInitialized_ = light_.begin();
-  distanceInitialized_ = distance_.begin();
+  distanceInitialized_ = beginDistance(uptimeMs());
   distanceSeenOnce_ = distanceInitialized_;
   distanceWarmingUp_ = distanceInitialized_;
   thermoReading_.available = thermoInitialized_;
@@ -32,10 +36,49 @@ void SensorController::begin() {
   distanceReading_.available = false;
   distanceReading_.quality = "unavailable";
   distanceReading_.error =
-      distanceInitialized_ ? "not_sampled" : "distance_not_found";
+      distanceInitialized_ ? "not_sampled"
+                           : (distanceBusFault_ ? "distance_bus_error" : "distance_not_found");
+  busStalled(uptimeMs());
+}
+
+// The Distance drivers retry a failed register access forever; a guarded
+// section turns that into a reported fault (see BusGuard.h).
+bool SensorController::beginDistance(uint64_t now) {
+  GuardedSection guard;
+  const bool started = distance_.begin();
+  distanceBusFault_ = guard.finish();
+  if (distanceBusFault_) {
+    // begin() returned with garbage from skipped transfers. Retry later, but
+    // back off: each begin() allocates driver objects that are never freed.
+    distanceBeginRetryAt_ = now + distanceBeginBackoffMs_;
+    distanceBeginBackoffMs_ = distanceBeginBackoffMs_ * 2 > kDistanceBeginMaxBackoffMs
+                                  ? kDistanceBeginMaxBackoffMs
+                                  : distanceBeginBackoffMs_ * 2;
+    return false;
+  }
+  if (started) distanceBeginBackoffMs_ = kDistanceFaultBackoffMs;
+  return started;
+}
+
+// True while acquisition is paused because the bus is being held. Entering
+// the pause reports every sensor once, so Linux sees why samples stopped.
+bool SensorController::busStalled(uint64_t now) {
+  BusGuard& guard = qwiicBus().guard();
+  if (guard.consumeSlow()) {
+    guard.pauseUntil(now + kBusBackoffMs);
+    ++busStalls_;
+    reportSensorFailure("unavailable", "i2c_bus_stalled");
+    reportLightFailure("unavailable", "i2c_bus_stalled");
+    distanceReading_.quality = "unavailable";
+    distanceReading_.error = "i2c_bus_stalled";
+    distanceReading_.millimeters = NAN;
+    distanceReading_.available = false;  // driver kept: not a disconnect
+  }
+  return guard.paused(now);
 }
 
 void SensorController::readThermoIfDue(uint64_t now) {
+  if (busStalled(now)) return;
   if (attempted_ && now - lastAttempt_ < kThermoIntervalMs) return;
   attempted_ = true;
   lastAttempt_ = now;
@@ -65,6 +108,7 @@ void SensorController::readThermoIfDue(uint64_t now) {
     reportSensorFailure("invalid", "thermo_out_of_range");
     return;
   }
+  if (busStalled(now)) return;
   thermoReading_.temperature = temperature;
   thermoReading_.humidity = humidity;
   thermoReading_.available = true;
@@ -77,6 +121,7 @@ void SensorController::readTemperatureHumidity(uint64_t now) {
 }
 
 void SensorController::readLightIfDue(uint64_t now) {
+  if (busStalled(now)) return;
   if (lightAttempted_ && now - lastLightAttempt_ < kLightIntervalMs) return;
   lightAttempted_ = true;
   lastLightAttempt_ = now;
@@ -92,7 +137,13 @@ void SensorController::readLightIfDue(uint64_t now) {
                        wasReady ? "light_disconnected" : "light_not_found");
     return;
   }
-  if (!light_.update()) {
+  bool updated;
+  {
+    // The Light library divides by the raw ALS count, which is 0 in darkness.
+    DivideByZeroTrapOff noTrap;
+    updated = light_.update();
+  }
+  if (!updated) {
     reportLightFailure("invalid", "light_read_failed");
     return;
   }
@@ -102,6 +153,7 @@ void SensorController::readLightIfDue(uint64_t now) {
     reportLightFailure("invalid", "light_out_of_range");
     return;
   }
+  if (busStalled(now)) return;
   lightReading_.ambientLightLux = lux;
   lightReading_.normalizedLevel = normalizeLight(lux);
   lightReading_.available = true;
@@ -124,10 +176,14 @@ bool SensorController::setLightCalibration(float darkReference,
 }
 
 void SensorController::readDistanceIfDue(uint64_t now) {
+  if (busStalled(now)) return;
   if (distanceAttempted_ &&
       now - lastDistanceAttempt_ < kDistanceIntervalMs) {
     return;
   }
+  // After a bus fault, leave the sensor alone for a while.
+  if (now < distanceRetryAt_) return;
+  if (!distanceInitialized_ && now < distanceBeginRetryAt_) return;
   distanceAttempted_ = true;
   lastDistanceAttempt_ = now;
   distanceReading_.sequence++;
@@ -138,17 +194,20 @@ void SensorController::readDistanceIfDue(uint64_t now) {
   // (never freed) and restarts the ToF ranging cycle. Call it only while the
   // sensor is not initialized: at boot or after a confirmed disconnect.
   if (!distanceInitialized_) {
-    distanceInitialized_ = distance_.begin();
+    distanceInitialized_ = beginDistance(now);
     if (!distanceInitialized_) {
       reportDistanceFailure(
           "unavailable",
-          distanceSeenOnce_ ? "distance_disconnected" : "distance_not_found",
+          distanceBusFault_ ? "distance_bus_error"
+                            : (distanceSeenOnce_ ? "distance_disconnected" : "distance_not_found"),
           true);
       return;
     }
     distanceSeenOnce_ = true;
     distanceWarmingUp_ = true;
   } else if (!distanceResponds()) {
+    // A held bus is not a disconnect: pause instead of re-running begin().
+    if (busStalled(now)) return;
     // available() keeps returning the last result when the bus read fails,
     // so a bare address probe is the only reliable disconnect signal. It
     // neither allocates nor disturbs an in-progress measurement.
@@ -164,7 +223,21 @@ void SensorController::readDistanceIfDue(uint64_t now) {
     reportDistanceFailure("unavailable", "distance_timeout");
     return;
   }
-  if (!distance_.available()) {
+  bool fresh;
+  {
+    GuardedSection guard;
+    fresh = distance_.available();
+    if (guard.finish()) {
+      // The driver gave up mid-read; whatever it returned is not a sample.
+      // Keep the driver (begin() leaks) and try again after a pause.
+      ++distanceBusFaults_;
+      distanceRetryAt_ = now + kDistanceFaultBackoffMs;
+      reportDistanceFailure("unavailable", "distance_bus_error");
+      return;
+    }
+  }
+  if (busStalled(now)) return;
+  if (!fresh) {
     // Present but no in-range result: report it without re-initializing.
     reportDistanceFailure("unavailable", "distance_timeout");
     return;

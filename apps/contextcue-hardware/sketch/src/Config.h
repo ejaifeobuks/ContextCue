@@ -5,7 +5,7 @@
 
 namespace contextcue {
 constexpr char kSchemaVersion[] = "1.0";
-constexpr char kFirmwareVersion[] = "0.2.0";
+constexpr char kFirmwareVersion[] = "0.2.3";
 // Keep these in sync with sketch.yaml; the compile check uses that profile.
 constexpr char kCoreVersion[] = "1.0.0";
 constexpr char kBridgeVersion[] = "0.4.4";
@@ -20,6 +20,20 @@ constexpr uint8_t kDistanceI2cAddress = 0x29;
 constexpr float kLightMaximumLux = 1000000.0f;
 constexpr int kDistanceMaximumMm = 4000;
 constexpr size_t kMaxJsonBytes = 224;
+
+// I2C fault containment (sensors/BusGuard.h). A guarded driver call gives up
+// after this many consecutive failed transfers instead of retrying forever.
+constexpr uint8_t kMaxBusRetries = 3;
+// The STM32 I2C driver times a stuck transfer out after 500 ms; anything this
+// slow means the bus is being held, so acquisition pauses for kBusBackoffMs
+// to keep loop() (and with it every Bridge RPC) responsive.
+constexpr uint32_t kSlowTransferMs = 100;
+constexpr uint32_t kBusBackoffMs = 2000;
+// After a Distance fault, wait before touching the sensor again. Re-running
+// begin() leaks driver objects (Arduino_Modulino 0.10.0), so its retries back
+// off exponentially up to the maximum.
+constexpr uint32_t kDistanceFaultBackoffMs = 1000;
+constexpr uint32_t kDistanceBeginMaxBackoffMs = 60000;
 
 // Outputs (baseline §5): MCU-enforced bounds, independent of Linux checks.
 // Modulino Pixels/Buzzer 7-bit addresses (the library's 0x6C/0x3C halved).

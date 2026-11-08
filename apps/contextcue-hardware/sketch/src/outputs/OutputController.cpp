@@ -5,6 +5,8 @@
 #include <string.h>
 #include <zephyr/kernel.h>
 
+#include "../sensors/QwiicBus.h"
+
 K_MUTEX_DEFINE(outputMutex);
 
 namespace contextcue {
@@ -117,9 +119,10 @@ void startSession(const char* session) {
   shared.quietRequested = true;
 }
 
+// Same bus object as the Modulino drivers, so slow probes count as stalls.
 bool reachable(uint8_t address) {
-  Wire1.beginTransmission(address);
-  return Wire1.endTransmission() == 0;
+  qwiicBus().beginTransmission(address);
+  return qwiicBus().endTransmission() == 0;
 }
 
 void writePixels(Pattern pattern, int brightnessPercent) {
@@ -305,6 +308,10 @@ void beginOutputs(uint64_t now) {
 }
 
 void updateOutputs(uint64_t now) {
+  // While the Qwiic bus is held, every write would stall loop() for the
+  // driver's 500 ms timeout. Leave state as is: queued commands keep their TTL
+  // and the lease watchdog runs once the bus is released.
+  if (qwiicBus().guard().paused(now)) return;
   // Availability: address probes, since the library ignores write errors.
   if (!probed || now - lastProbeMs >= kOutputProbeIntervalMs) {
     probed = true;
