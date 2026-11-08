@@ -242,12 +242,36 @@ off-board contingency, as the baseline requires.
    disappeared, so it no longer passes the bus through. Keep it off the bus
    (it can freeze every transfer) and replace it; no firmware or gateway
    change is needed for a working module.
-6. **Follow-up: bounded I2C.** One misbehaving module can block every Wire1
-   transfer and freeze all sensing and outputs, because these transfers wait
-   without a timeout. Find a Zephyr I2C timeout (or bus-recovery) setting
-   available to the pinned core, so a stuck device only marks itself
-   unavailable. Until then a stuck bus needs the module removed and an MCU
-   reset.
+6. **MCU halts in darkness (fixed in firmware 0.2.3, 8 November).** Root
+   cause of the recurring `mcu_unresponsive` (every RPC timing out at once,
+   41-140 s after start, also seen in the earlier mutex investigation):
+   Arduino_LTR381RGB 1.0.1 computes `lux = ... * (1 - 0.033f*(ir/rawlux))`
+   with integer `ir/rawlux`. In a dark room the raw ALS count reaches 0;
+   Zephyr enables the Cortex-M33 divide-by-zero trap, so this raised a
+   UsageFault and Zephyr halted the MCU (`arch_system_halt`), leaving the
+   Bridge UART unserviced. A reset in the same darkness halted it again, so
+   only a change of light (or luck) appeared to help. Found over SWD: IPSR 6,
+   faulting `sdiv r3, r3, r1` with r1 = 0 in `LTR381RGBClass::getALS`.
+   Fix: `sensors/DivideByZeroTrap` turns the trap off only around
+   `ModulinoLight::update()` (Armv8-M then returns 0, so the library reports
+   0 lux) and restores it; verified on the board for 5 minutes at 1 lux,
+   with CCR showing the trap restored between reads. Host test fails without
+   it. While the Light driver waits, the trap is also off for the other
+   threads; a library fix upstream would remove that.
+7. **Bounded I2C (firmware 0.2.1).** Found while chasing the halt, but not
+   its cause: the STM32duino VL53L4CD/VL53L4ED drivers retry a register
+   access with `while (endTransmission(false) != 0)` and no limit, so one
+   NACKing Distance sensor would freeze `loop()`. `sensors/BusGuard` and
+   `sensors/QwiicBus` (a `ZephyrI2C` on Wire1's device) stop that loop after
+   3 failures (`distance_bus_error`) and pause sampling for 2 s when a
+   transfer hits the 500 ms driver timeout (`i2c_bus_stalled`). Not yet
+   seen on the board. Still open: GPIO bus recovery (SCL pulses on PD12) if a
+   device is ever found holding SDA low.
+8. **Gateway read rates.** `HardwareGateway` now reads each RPC at the rate
+   the MCU samples it (Thermo 1 Hz, Light 5 Hz, Distance 10 Hz, outputs
+   1 Hz), and the application renews the output lease once a second. This
+   cuts Bridge traffic from about 40 to about 17 RPC/s at a 10 Hz poll; it
+   was not the cause of the halts.
 
 ### C. Calibration and hardware manifest (HW-06)
 
@@ -508,7 +532,7 @@ Buzzer physically changed.
 | Does the Distance rate reach 10 Hz alongside Light? | Proximity timing | Measure (C) |
 | Do all five Modulinos coexist on the Qwiic chain without address or power problems? | B, C | Bring-up gate (B) |
 | Replacement Pixels module (the current one is faulty: no I2C response, no pass-through, hangs the bus alone) | Pixels output, HW-03, T02/T05 | Order and fit a replacement |
-| Can Wire1 transfers be given a timeout on the pinned Zephyr core? | Robustness to a stuck device | Inspect the core's I2C driver configuration |
+| Report the Arduino_LTR381RGB `ir/rawlux` divide-by-zero upstream? | Removes the trap workaround in 0.2.3 | Open an issue with the SWD evidence |
 | Long-idle interval, unknown-Distance behavior, away-mode grace, return summary, important-repeat count | Notification policy | Product decision before Phase 10 |
 | Clerk scopes, token lifecycle and Open-Meteo attribution/rate rules | Live adapters (post-demo) | Provider gate |
 
