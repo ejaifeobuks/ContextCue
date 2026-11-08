@@ -53,7 +53,7 @@ def quoted_names(arg: str) -> set[str]:
 def referenced_icons() -> set[str]:
     names = set()
     html = read("index.html")
-    names |= set(re.findall(r"sprite\.svg#([a-z0-9-]+)", html))
+    names |= set(re.findall(r'<use href="#([a-z0-9-]+)"', html))
     app = read("app.js")
     # icon(name, cls): first argument; pill(tone, text, icon) and
     # group(title, body, icon): third argument.
@@ -82,6 +82,18 @@ class AssetTests(unittest.TestCase):
         used = referenced_icons()
         self.assertGreater(len(used), 30)  # the scan is finding the icon calls
         self.assertEqual(sorted(used - sprite_ids()), [])
+
+    def test_icons_are_inlined_once_not_referenced_externally(self):
+        # External <use href="file.svg#id"> references re-resolve on every
+        # re-render; the page inlines the sprite once instead.
+        for name in ("index.html", "app.js"):
+            self.assertNotIn("sprite.svg#", read(name), name)
+        self.assertIn('fetch("icons/sprite.svg")', read("app.js"))
+
+    def test_font_is_bundled_with_its_license(self):
+        self.assertTrue((ASSETS / "fonts/inter-latin-wght-normal.woff2").is_file())
+        self.assertIn("SIL Open Font License", read("fonts/LICENSE"))
+        self.assertIn('url("fonts/inter-latin-wght-normal.woff2")', read("styles.css"))
 
     def test_icon_license_is_bundled(self):
         self.assertIn("ISC License", read("icons/LICENSE"))

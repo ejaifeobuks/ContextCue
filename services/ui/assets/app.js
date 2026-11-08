@@ -27,8 +27,10 @@ function saveDemo(on) { try { localStorage.setItem("cc.demoMode", on ? "on" : "o
 
 const $ = (sel) => document.querySelector(sel);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const icon = (name, cls = "") => `<svg class="i ${cls}" aria-hidden="true"><use href="icons/sprite.svg#${name}"></use></svg>`;
-const pill = (tone, text, ic) => `<span class="pill ${tone}">${ic ? icon(ic) : ""}${esc(text)}</span>`;
+// Icons point at symbols inlined once by loadIcons(), so re-rendered markup
+// never re-resolves an external file (which can flash on a slow board).
+const icon = (name, cls = "") => `<svg class="i ${cls}" aria-hidden="true"><use href="#${name}"></use></svg>`;
+const pill = (tone, text, ic) => `<span class="pill ${tone}" title="${esc(text)}">${ic ? icon(ic) : ""}<span>${esc(text)}</span></span>`;
 const modePill = (mode) => { const b = L.modeBadge(mode); return b ? pill(b.cls, b.text, b.icon) : ""; };
 
 // Replace markup only when it changed, so polling does not reset focus,
@@ -660,5 +662,19 @@ document.addEventListener("change", (ev) => {
   if (ev.target.dataset.sensor) act("sim_sensor", { metric: ev.target.dataset.sensor, value: Number(ev.target.value) }, true);
 });
 
+// Inline the local icon sprite once; <use href="#name"> picks it up when it lands.
+async function loadIcons() {
+  try {
+    const res = await fetch("icons/sprite.svg");
+    if (!res.ok) return;
+    const holder = document.createElement("div");
+    holder.setAttribute("aria-hidden", "true");
+    holder.style.cssText = "position:absolute;width:0;height:0;overflow:hidden";
+    holder.innerHTML = await res.text();
+    document.body.prepend(holder);
+  } catch (e) { /* icons stay blank; every state is also written as text */ }
+}
+
+loadIcons();
 readUrlState();
 poll();

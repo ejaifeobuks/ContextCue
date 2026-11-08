@@ -2,6 +2,16 @@
    Every state is written in text; color and icons only reinforce it.
    No network fonts, CDNs or animation libraries: all assets are local. */
 
+/* Bundled so the board (which only has DejaVu Sans) and laptop previews use
+   the same text widths. Inter, SIL Open Font License 1.1: fonts/LICENSE. */
+@font-face {
+  font-family: "Inter";
+  src: url("fonts/inter-latin-wght-normal.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   --page: #eef2f8;
   --card: #ffffff;
@@ -29,7 +39,7 @@
   --shadow: 0 1px 2px rgba(15, 23, 42, .06), 0 6px 18px rgba(15, 23, 42, .08);
   --header: 56px;
   --tabbar: 60px;
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "DejaVu Sans", sans-serif;
+  font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "DejaVu Sans", sans-serif;
   color: var(--ink);
 }
 
@@ -47,10 +57,13 @@ h1, h2, h3, p { margin: 0; }
 .grow { flex: 1; }
 .dot { color: var(--muted); padding: 0 2px; }
 
+/* The panel is 1024x600. Never exceed it, but shrink to whatever the window
+   offers (startup, info bars, a laptop browser) instead of clipping: the
+   header and tab bar stay visible and the content area scrolls. */
 #frame {
   position: relative;
-  width: 1024px;
-  height: 600px;
+  width: min(100vw, 1024px);
+  height: min(100vh, 600px);
   background: var(--page);
   display: grid;
   grid-template-rows: var(--header) 1fr var(--tabbar);
@@ -88,15 +101,18 @@ h1, h2, h3, p { margin: 0; }
   display: flex; align-items: center; gap: 12px;
   padding: 0 16px 0 18px; color: #fff;
 }
-.brand { display: flex; align-items: center; gap: 10px; }
+.brand { display: flex; align-items: center; gap: 10px; flex: none; }
 .logo { width: 30px; height: 30px; filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .25)); }
 .brand .name { font-size: 22px; font-weight: 800; letter-spacing: -.3px; }
-.badges { display: flex; gap: 8px; flex: 1; justify-content: flex-end; }
-.controls { display: flex; align-items: center; gap: 8px; }
+/* Labels never wrap. If the bar runs short, the source/Demo badges shrink
+   with an ellipsis first; the controls and the clock keep their size. */
+.badges { display: flex; gap: 8px; flex: 1 1 auto; min-width: 0; justify-content: flex-end; overflow: hidden; }
+.badges .pill { flex: 0 1 auto; min-width: 0; }
+.controls { display: flex; align-items: center; gap: 8px; flex: none; }
 .hbtn {
   min-height: 42px; padding: 0 14px; border-radius: 21px;
   display: inline-flex; align-items: center; gap: 7px;
-  font-size: 15px; font-weight: 650; color: #fff;
+  font-size: 15px; font-weight: 650; color: #fff; white-space: nowrap;
   background: rgba(255, 255, 255, .14); border: 1px solid rgba(255, 255, 255, .28);
   backdrop-filter: blur(4px);
 }
@@ -104,7 +120,7 @@ h1, h2, h3, p { margin: 0; }
 .hbtn.on { background: #fff; color: var(--accent-2); border-color: #fff; }
 .hbtn.warn { background: #fff4dc; color: var(--warn); border-color: #ffd9a0; }
 .hbtn.ok .i { color: #9ff0bf; }
-.clock { text-align: right; margin-left: 6px; min-width: 96px; }
+.clock { text-align: right; margin-left: 6px; flex: none; white-space: nowrap; }
 #time { font-size: 24px; font-weight: 750; line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: -.5px; }
 #clock-label { font-size: 11px; font-weight: 650; opacity: .85; text-transform: uppercase; letter-spacing: .06em; margin-top: 3px; }
 
@@ -112,10 +128,11 @@ h1, h2, h3, p { margin: 0; }
 .pill {
   display: inline-flex; align-items: center; gap: 5px;
   font-size: 13px; font-weight: 650; line-height: 1;
-  padding: 6px 10px; border-radius: 999px; white-space: nowrap;
+  padding: 6px 10px; border-radius: 999px; white-space: nowrap; min-width: 0;
   background: var(--card-2); color: var(--muted); border: 1px solid var(--line);
 }
 .pill .i { width: 14px; height: 14px; }
+.pill > span { overflow: hidden; text-overflow: ellipsis; }
 .pill.sim { color: var(--sim); background: var(--sim-soft); border-color: #d9c8f5; }
 .pill.real, .pill.ok { color: var(--ok); background: var(--ok-soft); border-color: #bfe5cd; }
 .pill.warn { color: var(--warn); background: var(--warn-soft); border-color: #f3d39b; }
@@ -272,7 +289,7 @@ th { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: v
 .t-h .i { width: 17px; height: 17px; color: var(--accent); }
 .t-v { font-size: 23px; font-weight: 800; letter-spacing: -.4px; font-variant-numeric: tabular-nums; margin: 1px 0; min-height: 28px; display: flex; align-items: center; }
 .t-m { display: flex; gap: 6px; align-items: center; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; }
-.t-m .pill { padding: 3px 7px; font-size: 11px; }
+.t-m .pill { padding: 3px 7px; font-size: 11px; flex: none; }  /* the source label never shrinks */
 .t-m .why-na { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .strip { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 650; color: var(--ink-2); padding: 6px 10px; background: #fff; border: 1px solid var(--line); border-radius: 12px; }
 .strip .i { width: 18px; height: 18px; color: var(--accent); }
@@ -297,7 +314,7 @@ th { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: v
 .snav button .i { color: var(--muted); }
 .snav button.on { background: var(--accent-soft); color: var(--accent-2); }
 .snav button.on .i { color: var(--accent-2); }
-.snav button span:not(.badge) { flex: 1; }
+.snav button span:not(.badge) { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .badge { min-width: 22px; height: 22px; border-radius: 11px; background: var(--warn); color: #fff; font-size: 12px; font-weight: 800; display: grid; place-items: center; padding: 0 6px; }
 .spane { flex: 1; min-width: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding-right: 4px; }
 .pane-h { display: flex; align-items: center; gap: 10px; padding: 4px 4px 0; }
