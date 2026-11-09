@@ -102,15 +102,16 @@ kiosk() {
   local wait_s=0 url="" deadline prefs
   if [ "${1:-}" = "--wait" ]; then wait_s="${2:-600}"; fi
   export DISPLAY="${DISPLAY:-:0}"
+  # A kiosk must not blank or lock: unlocking needs a keyboard. Do this first,
+  # so the screen stays unlocked even if the app never answers.
+  xset s off s noblank -dpms 2>/dev/null || true
+  pkill -x light-locker 2>/dev/null || true
   deadline=$((SECONDS + wait_s))
   # At boot App Lab starts the app after the desktop is up: wait until it answers.
   until url="$(app_url)" && curl -sf -o /dev/null --max-time 2 "$url/api/state"; do
     [ "$SECONDS" -lt "$deadline" ] || die "ContextCue is not running (scripts/contextcue-app.sh run)"
     sleep 3
   done
-  # A kiosk must not blank or lock: unlocking needs a keyboard.
-  xset s off s noblank -dpms 2>/dev/null || true
-  pkill -x light-locker 2>/dev/null || true
   # Replace an earlier kiosk window. Its profile is only ever closed by killing
   # Chromium, so mark it cleanly closed; otherwise Chromium opens with a
   # "restore pages" bubble over the UI.
@@ -158,6 +159,9 @@ autostart() {
     status)
       arduino-app-cli properties get default
       if [ -f "$entry" ]; then echo "Kiosk at login: on ($entry)"; else echo "Kiosk at login: off"; fi
+      if [ -f "$locker" ]; then echo "Lock screen at login: off"; else echo "Lock screen at login: on"; fi
+      if pgrep -x light-locker >/dev/null; then echo "Lock screen running now: yes"; else echo "Lock screen running now: no"; fi
+      DISPLAY="${DISPLAY:-:0}" xset q 2>/dev/null | grep -E "timeout:|DPMS is" | sed 's/^ */Screen blanking: /' || true
       ;;
     *)
       die "usage: scripts/contextcue-app.sh autostart on|off|status"
