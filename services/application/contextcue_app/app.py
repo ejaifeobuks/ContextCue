@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+from uuid import uuid4
 import logging
 from datetime import timedelta
 from typing import Any
@@ -94,13 +95,27 @@ class ContextCueApp:
                 self.engine.morning_presented.add(key.split(":", 1)[1])
 
     # --------------------------------------------------------------- loop
+    def _request_token(self) -> str:
+        """Unique per explicit request. A counter alone repeats after a restart
+        while acknowledgement tombstones persist, so the first "Brief me"
+        after a restart was silently refused (seen on the board)."""
+        return f"{next(self._counter)}-{uuid4().hex[:8]}"
+
     async def start(self) -> None:
         self._diag("startup", {"gateway_mode": self.gateway_mode, "scenario": self.scenario.scenario_id,
                                "notes": self.startup_notes})
         await self._tick()
         self._task = asyncio.get_running_loop().create_task(self._run())
+        # Load the model and its fixed instructions in the background, so the
+        # first notice does not pay for them; the UI never waits on this.
+        warm_up = getattr(self.recommender.backend, "warm_up", None)
+        if warm_up is not None:
+            self._warm_task = asyncio.get_running_loop().create_task(warm_up())
 
     async def stop(self) -> None:
+        warm = getattr(self, "_warm_task", None)
+        if warm is not None and not warm.done():
+            warm.cancel()
         if self._task:
             self._task.cancel()
             try:
@@ -363,7 +378,7 @@ class ContextCueApp:
         return {"status": "focus_on" if enabled else "focus_off"}
 
     def _act_briefing(self, payload):
-        notice = self._handle_spec(self.engine.briefing_request(next(self._counter)))
+        notice = self._handle_spec(self.engine.briefing_request(self._request_token()))
         if notice is None:
             raise ActionError("A briefing is already being prepared")
         return {"status": "requested", "notice_id": notice.notice_id}
@@ -372,7 +387,7 @@ class ContextCueApp:
         question = payload.get("question")
         if question not in SUPPORTED_QUESTIONS:
             raise ActionError("Unsupported question. Choose one of the listed questions.")
-        notice = self._handle_spec(self.engine.question_request(question, next(self._counter)))
+        notice = self._handle_spec(self.engine.question_request(question, self._request_token()))
         return {"status": "requested", "notice_id": notice.notice_id if notice else None}
 
     def _act_play(self, payload):
@@ -583,11 +598,19 @@ class ContextCueApp:
                               "execution_location": "uno_q_linux", "label": src.label,
                               "source_mode": src.source_mode})
         rec = self.recommender.status()
-        model_state = "unavailable" if rec["backend"] == "UnavailableModel" else (
-            "busy" if rec["active_request"] else "ready")
-        items.append({"component_id": "model", "state": model_state,
-                      "reason": "No model configured (G1 benchmark pending); factual fallback in use"
-                      if model_state == "unavailable" else (rec["last_outcome"] or {}).get("reason"),
+        last = rec["last_outcome"] or {}
+        if rec["backend"] == "UnavailableModel":
+            model_state, reason = "unavailable", "No model configured; factual fallback in use"
+        elif rec["active_request"]:
+            model_state, reason = "busy", f"Generating with {rec['model_version'] or 'the on-board model'}"
+        elif last.get("outcome") in ("error", "timed_out"):
+            # The worker stays available; the next request tries again.
+            model_state, reason = "degraded", f"Last request {last['outcome'].replace('_', ' ')}: {last.get('reason')}"
+        else:
+            model_state = "ready"
+            reason = f"{rec['model_version'] or 'On-board model'} on the UNO Q" + (
+                f"; last reply {last['outcome']}" if last.get("outcome") else "")
+        items.append({"component_id": "model", "state": model_state, "reason": reason,
                       "last_success_at": None, "execution_location": rec["execution_location"]})
         speech = self.notifications.speech.status()
         items.append({"component_id": "speech", "state": "ready" if speech.get("ready") else "unavailable",

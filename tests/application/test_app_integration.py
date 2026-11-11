@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import support  # noqa: E402
 
+from contextcue_app.recommendation import ModelUnavailable
 from contextcue_app import ActionError, ContextCueApp  # noqa: E402
 from contextcue_app.dev_gateway import SimulatedGateway  # noqa: E402
 from contextcue_app.repository import DataRepository  # noqa: E402
@@ -70,6 +71,78 @@ class PreparationFlow(AppHarness):
         await self.step(60, 10)  # 10:00
         self.assertEqual(prep.lifecycle.value, "expired")
 
+    async def test_model_can_quote_the_code_calculated_countdown(self):
+        from contextcue_app.contracts import ModelResponse
+
+        seen = []
+
+        class QuotingModel:
+            execution_location = "uno_q_linux"
+            model_version = "fake"
+
+            async def complete(self, snap):
+                seen.append(snap)
+                minutes = snap.facts["minutes_until_event"]
+                ids = tuple(e.evidence_id for e in snap.evidence if e.metric in ("event", "forecast_event"))
+                return ModelResponse(snap.request_id, snap.snapshot_id, snap.category,
+                                     f"Design review starts in {minutes} minutes; rain chance is 70%.", ids)
+
+        self.build("event_rain")
+        self.app.recommender.backend = QuotingModel()
+        await self.step(0.1)
+        await self.step()
+        [prep] = self.active("preparation")
+        self.assertEqual(seen[0].facts["minutes_until_event"], 22)  # 09:38 -> 10:00
+        self.assertEqual((prep.origin, prep.request_outcome), ("generated", "generated"))
+        self.assertIn("22 minutes", prep.text)
+
+    async def test_brief_me_works_after_restart_with_acknowledged_briefing(self):
+        # On the board the first "Brief me" after every restart was refused:
+        # explicit requests were keyed by a counter that restarts at 1, and the
+        # previous session's acknowledged briefing:<date>:1 is tombstoned.
+        tmp = support.temp_dir(self)
+        repo = DataRepository(Path(tmp) / "cc.db")
+        self.build("event_rain", repo=repo)
+        await self.step(0.1)
+        first = await self.app.action("briefing", {})
+        await self.settle()
+        await self.app.action("acknowledge", {"notice_id": first["notice_id"]})
+        repo.close()
+        repo2 = DataRepository(Path(tmp) / "cc.db")
+        self.addCleanup(repo2.close)
+        self.build("event_rain", repo=repo2)
+        await self.step(0.1)
+        again = await self.app.action("briefing", {})
+        self.assertEqual(again["status"], "requested")
+        answer = await self.app.action("ask", {"question": "rain_today"})
+        self.assertEqual(answer["status"], "requested")
+
+    async def test_snapshots_carry_later_rain_and_advice(self):
+        # Board test: asked "Will it rain today?" at 07:45 the model said no,
+        # because it only saw the current period; the forecast had 70% from 09:00.
+        captured = []
+
+        class Capture:
+            execution_location = "test"
+            model_version = None
+
+            async def complete(self, snap):
+                captured.append(snap)
+                raise ModelUnavailable("captured")
+
+        self.build("morning")
+        self.app.recommender.backend = Capture()
+        await self.step(0.1)
+        await self.app.action("ask", {"question": "rain_today"})
+        await self.settle()
+        [snap] = captured
+        later = next(e for e in snap.evidence if e.evidence_id == "weather.later")
+        self.assertEqual((later.value["start_local"], later.value["precipitation_probability"]), ("09:00", 70))
+        self.assertEqual(snap.facts["advice"], ["Bring an umbrella"])
+        [notice] = [n for n in self.app.notifications.notices.values() if n.category == "context_answer"]
+        self.assertIn("70% from 09:00", notice.text)  # the fallback says it too
+        self.assertIn("Bring an umbrella", notice.text)
+
     async def test_acknowledgement_survives_restart(self):
         tmp = support.temp_dir(self)
         repo = DataRepository(Path(tmp) / "cc.db")
@@ -99,7 +172,7 @@ class MorningFlow(AppHarness):
         self.gw.set_value("distance", 350)
         await self.step(0.2, 5)
         [morning] = self.active("morning")
-        self.assertIn("4 events today", morning.text)
+        self.assertIn("Demo calendar: 4 more events today", morning.text)
         self.assertIn("Indoors 22.5 °C", morning.text)
         await self.app.action("acknowledge", {"notice_id": morning.notice_id})
         self.gw.set_value("distance", 1200)

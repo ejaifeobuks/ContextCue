@@ -31,8 +31,12 @@ from .contracts import (CATEGORIES, COMFORT, CONTEXT_ANSWER, MORNING, PREPARATIO
 
 MAX_SENTENCES = 3
 MAX_CHARS = 400
-GENERATION_TIMEOUT_S = 30.0  # development cap; G1 must freeze the release value
-PROMPT_VERSION = "contextcue-prompt-1"
+# G1 release deadline. Measured on the UNO Q (Qwen3.5-0.8B Q4_0, CPU, app
+# prompts): p50 about 22 s, max 29 s with nothing else loading the board.
+# 45 s leaves headroom for sensing and the UI; a later reply is discarded and
+# the notice shows the labeled factual fallback.
+GENERATION_TIMEOUT_S = 45.0
+PROMPT_VERSION = "contextcue-prompt-2"
 
 SUPPORTED_QUESTIONS = {
     "next_event": "What is my next event?",
@@ -61,49 +65,190 @@ class UnavailableModel:
         raise ModelUnavailable("model_not_configured")
 
 
-class LlamaCppModel:
-    """OpenAI-compatible chat completion against the on-board llama.cpp runner.
+# Fixed instructions, sent first and unchanged on every request so the
+# llama.cpp server can reuse their processed prefix: on the UNO Q the model
+# reads input at about 12 tokens/s, so every reused token saves time.
+SYSTEM_PROMPT = """You write short desk notices for ContextCue.
+Use ONLY the facts in the snapshot JSON. Never invent times, numbers, names, places or events.
+Do not do arithmetic: quote numbers exactly as they appear in the snapshot.
+Reply with exactly one JSON object and nothing else: {"text": "<at most 2 short sentences>"}
+Write like a helpful friend, not a report. Never state the current time. If facts.advice is present, include that advice in your own words.
+forecast_next is the weather now; forecast_later is later today, from its "from" time.
+If no_more_events_today is true, say there is nothing else on the calendar today.
+morning: name next_event with its start time, then the weather, including rain later today.
+preparation: name the event and its start time; use facts.minutes_until_event if present; mention rain only if rain_chance_pct is 50 or more.
+comfort: give the reading and the preferred range.
+context_answer: answer request.question in one or two sentences."""
 
-    No tools, no memory: each request sees only its own snapshot.
+
+def sky(period: dict) -> str | None:
+    """Condition word for wording: a clear night is "clear", not "sunny"."""
+    condition = period.get("condition")
+    return "clear" if condition == "sunny" and period.get("night") else condition
+
+
+def _drop_empty(value: dict) -> dict:
+    return {k: v for k, v in value.items() if v not in (None, [], {}, "")}
+
+
+def _compact(event) -> dict:
+    """The fields a model needs from one evidence item, in plain local terms.
+
+    The model only sees this view; validation still checks its reply against
+    the full evidence, so dropping fields cannot loosen any check.
+    """
+    v, metric = event.value, event.metric
+    if metric == "schedule_today" and isinstance(v, dict):
+        def brief(e):
+            return _drop_empty({"title": e.get("title"), "start": e.get("start_local"),
+                                "location": e.get("location")}) if e else None
+        nxt = v.get("next_event")
+        current = v.get("current_events") or []
+        remaining = v.get("remaining_events") or []
+        later = [brief(e) for e in remaining
+                 if not nxt or e.get("event_id") != nxt.get("event_id")][:2]
+        # Only what is still ahead: a whole-day count read as "4 events today"
+        # in the evening, after every one of them had ended.
+        left = len(current) + len(remaining)
+        return _drop_empty({"events_left_today": left, "no_more_events_today": left == 0 or None,
+                            "now": [e.get("title") for e in current],
+                            "next_event": brief(nxt), "later": later, "all_day": v.get("all_day")})
+    if metric == "event" and isinstance(v, dict):
+        return _drop_empty({"title": v.get("title"), "start": v.get("start_local"),
+                            "location": v.get("location")})
+    if metric.startswith("forecast") and isinstance(v, dict):
+        # Only the later-today period gets times: the 0.8B model read the
+        # current period's start ("from": "21:00") as the time of day.
+        later = metric == "forecast_later"
+        return _drop_empty({"from": v.get("start_local") if later else None,
+                            "until": v.get("end_local") if later else None,
+                            "condition": sky(v),
+                            "rain_chance_pct": v.get("precipitation_probability"),
+                            "temperature_c": v.get("temperature_c"), "location": v.get("location")})
+    if metric.startswith("preferred_") and isinstance(v, (list, tuple)) and len(v) == 2:
+        return {"low": v[0], "high": v[1], "unit": event.unit}
+    if metric.startswith("comfort_"):
+        return {"condition": v}
+    if isinstance(v, float):
+        return _drop_empty({"value": round(v, 1), "unit": event.unit})
+    return _drop_empty({"value": v, "unit": event.unit})
+
+
+# Facts that are only for code (raw milliseconds, duplicated event records).
+# local_time is hidden too: no notice needs the current time, and the 0.8B
+# model quoted it as an event time ("hot at 22:31") in board tests.
+_HIDDEN_FACTS = {"event", "event_in_ms", "local_date", "local_time"}
+# Evidence a notice type does not need in its wording. Preparation is about one
+# event: with the whole day's schedule beside it the model left the event's
+# name out. The evidence stays in the snapshot for Why and validation.
+_HIDDEN_EVIDENCE = {PREPARATION: {"schedule_today"}}
+
+
+def _model_evidence(snapshot: ContextSnapshot) -> list:
+    hidden = _HIDDEN_EVIDENCE.get(snapshot.category, set())
+    return [e for e in snapshot.evidence if e.quality == "valid" and e.metric not in hidden]
+
+
+def model_view(snapshot: ContextSnapshot) -> dict:
+    """The compact snapshot a model reads: request, code-calculated facts and
+    evidence with the same IDs the reply must cite."""
+    request = {"category": snapshot.category}
+    if snapshot.question:
+        request["question"] = SUPPORTED_QUESTIONS.get(snapshot.question, snapshot.question)
+    facts = {k: v for k, v in snapshot.facts.items() if k not in _HIDDEN_FACTS}
+    hidden = _HIDDEN_EVIDENCE.get(snapshot.category, set())
+    evidence = [{"id": e.evidence_id, "type": e.metric, **_compact(e)}
+                for e in _model_evidence(snapshot) if e.metric not in hidden]
+    return _drop_empty({"request": request, "facts": facts, "evidence": evidence})
+
+
+def response_schema(snapshot: ContextSnapshot) -> dict:
+    """JSON schema for llama.cpp's grammar: only the notice text.
+
+    The category is the request's and the evidence is what the model was
+    shown, so code fills both in. Asking the model to echo them cost about 25
+    output tokens per reply (8-12 s on the UNO Q CPU) and pushed briefings
+    past the deadline. Every number in the text is still checked against
+    that evidence."""
+    return {
+        "type": "object",
+        "properties": {"text": {"type": "string", "minLength": 1, "maxLength": MAX_CHARS}},
+        "required": ["text"],
+        "additionalProperties": False,
+    }
+
+
+def model_evidence_ids(snapshot: ContextSnapshot) -> tuple[str, ...]:
+    return tuple(e.evidence_id for e in _model_evidence(snapshot))
+
+
+class LlamaCppModel:
+    """OpenAI-compatible chat completion against the on-board llama.cpp runner
+    (the `arduino:llm` Brick).
+
+    No tools, no memory: each request sees only its own compact snapshot.
+    With `structured=True` (default) the reply is constrained by a JSON schema.
     """
 
     execution_location = "uno_q_linux"
 
     def __init__(self, base_url: str = "http://127.0.0.1:9999/v1", model: str | None = None,
-                 max_tokens: int = 160, timeout_s: float = GENERATION_TIMEOUT_S):
+                 max_tokens: int = 100, timeout_s: float = GENERATION_TIMEOUT_S,
+                 structured: bool = True):
         self.base_url = base_url.rstrip("/")
         self.model_version = model
         self.max_tokens = max_tokens
         self.timeout_s = timeout_s
+        self.structured = structured
 
     def _prompt(self, snapshot: ContextSnapshot) -> list[dict]:
-        evidence = [
-            {"id": e.evidence_id, "metric": e.metric, "value": e.value, "unit": e.unit,
-             "quality": e.quality, "label": e.label}
-            for e in snapshot.evidence
-        ]
-        system = (
-            "You write short desk cues for ContextCue. Use only the evidence given. "
-            "Never invent times, numbers, places or events. At most 3 sentences. "
-            'Reply with JSON only: {"category": "...", "text": "...", "evidence_ids": ["..."]}.'
-        )
-        user = json.dumps({
-            "category": snapshot.category, "reason": snapshot.reason,
-            "question": snapshot.question, "facts": snapshot.facts, "evidence": evidence,
-        }, default=str)
-        return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+        user = json.dumps(model_view(snapshot), separators=(",", ":"), default=str)
+        return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]
+
+    def _request(self, path: str, body: dict | None, timeout: float) -> dict:
+        request = urllib.request.Request(
+            f"{self.base_url}{path}", data=None if body is None else json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"}, method="GET" if body is None else "POST")
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read())
+
+    def _ensure_model(self) -> None:
+        # The Brick serves exactly one model and requires its name per request.
+        if self.model_version is None:
+            models = self._request("/models", None, 10).get("data") or []
+            if not models:
+                raise ModelUnavailable("model_not_loaded")
+            self.model_version = models[0]["id"]
 
     def _call(self, snapshot: ContextSnapshot) -> str:
-        body = {"messages": self._prompt(snapshot), "max_tokens": self.max_tokens,
-                "temperature": 0.3, "response_format": {"type": "json_object"}}
-        if self.model_version:
-            body["model"] = self.model_version
-        request = urllib.request.Request(
-            f"{self.base_url}/chat/completions", data=json.dumps(body).encode(),
-            headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(request, timeout=self.timeout_s) as response:
-            payload = json.loads(response.read())
+        self._ensure_model()
+        # Greedy decoding: at temperature 0.2 the 0.8B model occasionally
+        # sampled stray tokens from other scripts mid-sentence (G1 benchmark).
+        body = {"model": self.model_version, "messages": self._prompt(snapshot),
+                "max_tokens": self.max_tokens, "temperature": 0}
+        if self.structured:
+            body["response_format"] = {"type": "json_schema", "json_schema": {
+                "name": "contextcue_notice", "schema": response_schema(snapshot)}}
+        else:
+            body["response_format"] = {"type": "json_object"}
+        payload = self._request("/chat/completions", body, self.timeout_s)
         return payload["choices"][0]["message"]["content"]
+
+    def _warm(self) -> None:
+        self._ensure_model()
+        self._request("/chat/completions", {
+            "model": self.model_version, "max_tokens": 1,
+            "messages": [{"role": "system", "content": SYSTEM_PROMPT},
+                         {"role": "user", "content": "{}"}]}, 120)
+
+    async def warm_up(self) -> None:
+        """Load the model and process the fixed instructions once, so the
+        first real request does not pay for them. Failures are left to the
+        first real request to report."""
+        try:
+            await asyncio.to_thread(self._warm)
+        except Exception:
+            pass
 
     async def complete(self, snapshot: ContextSnapshot) -> ModelResponse:
         started = iso(datetime.now().astimezone())
@@ -117,11 +262,10 @@ class LlamaCppModel:
             raise ValueError("malformed_model_output") from exc
         if not isinstance(data, dict):
             raise ValueError("malformed_model_output")
-        ids = data.get("evidence_ids")
         return ModelResponse(
             request_id=snapshot.request_id, snapshot_id=snapshot.snapshot_id,
-            category=str(data.get("category", "")), text=str(data.get("text", "")),
-            evidence_ids=tuple(ids) if isinstance(ids, list) else (),
+            category=snapshot.category, text=str(data.get("text", "")),
+            evidence_ids=model_evidence_ids(snapshot),
             execution_location=self.execution_location, model_version=self.model_version,
             runtime_version="llamacpp-runner", prompt_version=PROMPT_VERSION,
             started_at=started, finished_at=iso(datetime.now().astimezone()),
@@ -131,6 +275,9 @@ class LlamaCppModel:
 # ---------------------------------------------------------------- validation
 
 _NUMBER = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?")
+# Plain English notice text: Latin letters (with accents), digits, common
+# punctuation, degree sign and dashes. Anything else is a stray model token.
+_PLAIN_TEXT = re.compile(r"[A-Za-z\u00C0-\u024F0-9\s.,;:!?'\"()%°/&+\-\u2013\u2014\u2019]*")
 
 
 def _allowed_numbers(snapshot: ContextSnapshot, referenced: set[str]) -> set[str]:
@@ -160,6 +307,14 @@ def _allowed_numbers(snapshot: ContextSnapshot, referenced: set[str]) -> set[str
     return allowed
 
 
+def _number_key(text: str) -> str:
+    """Compare numbers by value: "20", "20.0" and "020" are the same claim."""
+    try:
+        return format(float(text), "g")
+    except ValueError:
+        return text
+
+
 def validate_response(response: ModelResponse, snapshot: ContextSnapshot) -> str | None:
     """Return None when acceptable, otherwise a rejection reason."""
     if response.request_id != snapshot.request_id or response.snapshot_id != snapshot.snapshot_id:
@@ -171,15 +326,17 @@ def validate_response(response: ModelResponse, snapshot: ContextSnapshot) -> str
         return "empty_text"
     if len(text) > MAX_CHARS or len(re.findall(r"[.!?](?:\s|$)", text)) > MAX_SENTENCES:
         return "too_long"
+    if not _PLAIN_TEXT.fullmatch(text):
+        return "unexpected_characters"
     available = {e.evidence_id for e in snapshot.evidence if e.quality == "valid"}
     referenced = set(response.evidence_ids)
     if not referenced:
         return "no_evidence"
     if not referenced <= available:
         return "unknown_or_invalid_evidence"
-    allowed = _allowed_numbers(snapshot, referenced)
+    allowed = {_number_key(n) for n in _allowed_numbers(snapshot, referenced)}
     for number in _NUMBER.findall(text):
-        if number not in allowed and (number.lstrip("0") or "0") not in allowed:
+        if _number_key(number) not in allowed:
             return f"unsupported_number:{number}"
     return None
 
@@ -208,14 +365,23 @@ def factual_fallback(snapshot: ContextSnapshot) -> ModelResponse | None:
     ids: list[str] = []
     schedule = _evidence(snapshot, "schedule_today")
     forecast = _evidence(snapshot, "forecast_next")
+    later = _evidence(snapshot, "forecast_later")
     temperature = _evidence(snapshot, "temperature")
     humidity = _evidence(snapshot, "humidity")
 
-    def schedule_line():
+    def schedule_line(whole_day: bool = False):
         if schedule is None:
             return
         s = schedule.value
-        line = f"{s['event_count']} events today, {_duration(s['busy_ms'])} scheduled"
+        left = len(s.get("current_events") or []) + len(s.get("remaining_events") or [])
+        demo = "Demo calendar: " if schedule.source_mode == "simulated" else ""
+        if whole_day:  # "How busy is today?"
+            line = f"{demo}{s['event_count']} events today, {_duration(s['busy_ms'])} scheduled"
+            line += f", {left} still to come" if left else ", none still to come"
+        elif left == 0:
+            line = f"{demo}No more events today"
+        else:
+            line = f"{demo}{left} more {'event' if left == 1 else 'events'} today"
         if s.get("next_event"):
             n = s["next_event"]
             line += f"; next is {n['title']} at {n['start_local']}"
@@ -227,11 +393,18 @@ def factual_fallback(snapshot: ContextSnapshot) -> ModelResponse | None:
             return
         f = forecast.value
         if f.get("precipitation_probability") is not None:
-            parts.append(f"Forecast for {f['location']}: {f['condition']}, "
-                         f"{f['precipitation_probability']:.0f}% chance of rain.")
+            line = (f"Forecast for {f['location']}: {sky(f)}, "
+                    f"{f['precipitation_probability']:.0f}% chance of rain")
         else:
-            parts.append(f"Forecast for {f['location']}: {f['condition']}.")
+            line = f"Forecast for {f['location']}: {sky(f)}"
         ids.append(forecast.evidence_id)
+        if later is not None and (later.value.get("precipitation_probability") or 0) > \
+                (f.get("precipitation_probability") or 0):
+            line += (f"; {later.value['precipitation_probability']:.0f}% from "
+                     f"{later.value['start_local']}")
+            ids.append(later.evidence_id)
+        tips = facts.get("advice") or []
+        parts.append(line + (f". {tips[0]}." if tips else "."))
 
     def indoor_line():
         bits = []
@@ -288,7 +461,9 @@ def factual_fallback(snapshot: ContextSnapshot) -> ModelResponse | None:
         elif question == "room_comfort":
             indoor_line()
         elif question == "schedule_today":
-            schedule_line()
+            schedule_line(whole_day=True)
+    if parts and category in (PREPARATION, COMFORT) and facts.get("advice"):
+        parts.append(f"{facts['advice'][0]}.")
     if not parts:
         return None
     return ModelResponse(snapshot.request_id, snapshot.snapshot_id, category,

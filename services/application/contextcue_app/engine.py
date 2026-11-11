@@ -29,7 +29,7 @@ RAIN_THRESHOLD = 50.0
 
 QUESTION_EVIDENCE = {
     "next_event": ["calendar.schedule"],
-    "rain_today": ["weather.now"],
+    "rain_today": ["weather.now", "weather.later"],
     "room_comfort": ["sensor.temperature", "sensor.humidity"],
     "schedule_today": ["calendar.schedule"],
 }
@@ -222,7 +222,7 @@ class ContextEngine:
             current = _period_at(wx.items, now) or _next_period(wx.items, now)
         else:
             current = None
-        value = _period_value(current) if current else None
+        value = _period_value(current, now, settings.zone) if current else None
         self._put("weather.now", material=(wx.quality, value), source_id=wx.source_id,
                   source_type="weather", metric="forecast_next", value=value, unit=None,
                   observed_at=wx.observed_at, received_at=wx.received_at,
@@ -233,7 +233,7 @@ class ContextEngine:
         if self.schedule and self.schedule.next_event and wx.quality == "valid":
             event_weather = _period_at(wx.items, self.schedule.next_event.start)
         if event_weather:
-            value = _period_value(event_weather)
+            value = _period_value(event_weather, now, settings.zone)
             self._put("weather.event", material=value, source_id=wx.source_id,
                       source_type="weather", metric="forecast_event", value=value, unit=None,
                       observed_at=wx.observed_at, received_at=wx.received_at,
@@ -241,6 +241,21 @@ class ContextEngine:
                       quality="valid", provenance=wx.label, label=wx.label)
         else:
             self._drop("weather.event")
+
+        # The rest of today: the rainiest period still to come, so a morning
+        # briefing or "Will it rain today?" can warn about rain later on.
+        later = _later_today(wx.items, current, now, settings.zone) if wx.quality == "valid" else None
+        if later:
+            value = {**_period_value(later, now, settings.zone),
+                     "start_local": parse_iso(later.start).astimezone(settings.zone).strftime("%H:%M"),
+                     "end_local": parse_iso(later.end).astimezone(settings.zone).strftime("%H:%M")}
+            self._put("weather.later", material=value, source_id=wx.source_id,
+                      source_type="weather", metric="forecast_later", value=value, unit=None,
+                      observed_at=wx.observed_at, received_at=wx.received_at,
+                      valid_until=wx.valid_until, freshness_ms=None, source_mode=wx.source_mode,
+                      quality="valid", provenance=wx.label, label=wx.label)
+        else:
+            self._drop("weather.later")
 
     # ------------------------------------------------------------ triggers
     def evaluate_triggers(self) -> list[TriggerSpec]:
@@ -291,20 +306,20 @@ class ContextEngine:
                 facts={"condition": name}, condition=name))
         return specs
 
-    def _morning_spec(self, date: str, *, explicit: bool, reason: str, n: int = 0) -> TriggerSpec:
-        ids = ["calendar.schedule", "weather.now", "sensor.temperature", "sensor.humidity"]
+    def _morning_spec(self, date: str, *, explicit: bool, reason: str, n: int | str = 0) -> TriggerSpec:
+        ids = ["calendar.schedule", "weather.now", "weather.later", "sensor.temperature", "sensor.humidity"]
         return TriggerSpec(
             category=MORNING,
             dedupe_key=f"morning:{date}" if not explicit else f"briefing:{date}:{n}",
             priority=2 if explicit else 0, evidence=ids, required=["calendar.schedule"],
             reason=reason, explicit=explicit)
 
-    def briefing_request(self, n: int) -> TriggerSpec:
+    def briefing_request(self, n: int | str) -> TriggerSpec:
         local = self._now().astimezone(self._settings().zone)
         return self._morning_spec(local.date().isoformat(), explicit=True,
                                   reason="explicit_request", n=n)
 
-    def question_request(self, question: str, n: int) -> TriggerSpec:
+    def question_request(self, question: str, n: int | str) -> TriggerSpec:
         if question not in SUPPORTED_QUESTIONS:
             raise ValueError("unsupported_question")
         ids = QUESTION_EVIDENCE[question]
@@ -326,6 +341,15 @@ class ContextEngine:
         evidence = tuple(self.evidence[e] for e in spec.evidence if e in self.evidence)
         facts = dict(spec.facts)
         facts.update({"local_time": local.strftime("%H:%M"), "local_date": local.date().isoformat()})
+        # Code does the arithmetic (baseline): a countdown the model may quote,
+        # rounded up like the UI's "In N min", at the time the snapshot is built.
+        event = facts.get("event")
+        if isinstance(event, dict) and event.get("start"):
+            seconds = (parse_iso(event["start"]) - now).total_seconds()
+            facts["minutes_until_event"] = max(0, -(-int(seconds) // 60))
+        tips = advice(spec.category, evidence, facts.get("condition"), spec.question)
+        if tips:
+            facts["advice"] = tips
         return ContextSnapshot(
             request_id=f"req-{uuid4().hex[:10]}", snapshot_id=f"{notice_id}:{uuid4().hex[:6]}",
             revision=sum(e.revision for e in evidence), category=spec.category,
@@ -371,6 +395,44 @@ def _log_bucket(lux: float) -> float:
     return math.log(lux + 1, 1.25)
 
 
+# Advice is decided by code from the evidence, like every other fact; the model
+# only words it. Thresholds: rain at RAIN_THRESHOLD (the preparation rule),
+# cold at 5 degC.
+COLD_OUTDOOR_C = 5.0
+INDOOR_TIPS = {"hot": "Open a window or use a fan", "cold": "Add a layer or warm the room",
+               "humid": "Air out the room", "dry": "Drink some water"}
+
+
+def advice(category: str, evidence, condition: str | None = None,
+           question: str | None = None) -> list[str]:
+    """Short, number-free suggestions supported by the snapshot's evidence."""
+    if category == COMFORT:
+        return [INDOOR_TIPS[condition]] if condition in INDOOR_TIPS else []
+    if category == CONTEXT_ANSWER and question != "rain_today":
+        return []
+    forecasts = [e.value for e in evidence
+                 if e.metric.startswith("forecast") and e.quality == "valid" and isinstance(e.value, dict)]
+    tips = []
+    if any((f.get("precipitation_probability") or 0) >= RAIN_THRESHOLD for f in forecasts):
+        tips.append("Bring an umbrella")
+    if any(f.get("condition") == "snowy" for f in forecasts):
+        tips.append("Dress for snow")
+    elif any(f.get("temperature_c") is not None and f["temperature_c"] <= COLD_OUTDOOR_C for f in forecasts):
+        tips.append("Wear a warm coat")
+    return tips
+
+
+def _later_today(periods, current, now: datetime, zone):
+    """The rainiest forecast period after the current one that starts today."""
+    today = now.astimezone(zone).date()
+    after = parse_iso(current.end) if current else now
+    later = [p for p in periods if parse_iso(p.start) >= after
+             and parse_iso(p.start).astimezone(zone).date() == today]
+    if not later:
+        return None
+    return max(later, key=lambda p: (p.precipitation_probability or 0, -parse_iso(p.start).timestamp()))
+
+
 def _period_at(periods, when: datetime):
     for p in periods:
         if parse_iso(p.start) <= when < parse_iso(p.end):
@@ -383,7 +445,17 @@ def _next_period(periods, when: datetime):
     return upcoming[0] if upcoming else None
 
 
-def _period_value(p) -> dict:
+def _is_night(hour: int) -> bool:
+    """Same rule as the UI (ui-logic isNightHour): 18:00 to 05:59 is night."""
+    return hour >= 18 or hour < 6
+
+
+def _period_value(p, now: datetime, zone) -> dict:
+    """A forecast period as evidence. `night` is set when the period (from now,
+    if it has already begun) is at night, so wording can say "clear", not
+    "sunny", for a clear night."""
+    start = max(parse_iso(p.start), now).astimezone(zone)
     return {"period_id": p.period_id, "start": p.start, "end": p.end, "condition": p.condition,
             "precipitation_probability": p.precipitation_probability,
-            "temperature_c": p.temperature_c, "location": p.location}
+            "temperature_c": p.temperature_c, "location": p.location,
+            "night": _is_night(start.hour)}

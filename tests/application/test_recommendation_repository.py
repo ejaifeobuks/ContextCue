@@ -44,12 +44,83 @@ class ValidationTests(unittest.TestCase):
                       ("sensor.temperature", "pref.temperature_range"))
         self.assertIsNone(validate_response(ok, snap))
 
+    def test_numbers_are_compared_by_value(self):
+        # Board test: "20.0 degC" was rejected because evidence 20.0 became "20".
+        snap = snapshot()
+        ok = response("It is 27.4 degC, above your preferred 20.0 to 26.0 degC.",
+                      ("sensor.temperature", "pref.temperature_range"))
+        self.assertIsNone(validate_response(ok, snap))
+
+    def test_model_view_is_compact_and_focused(self):
+        from contextcue_app.recommendation import model_view, response_schema
+        schedule = {"event_count": 2, "busy_ms": 1, "next_event": {"event_id": "a", "title": "Stand-up",
+                    "start_local": "09:00", "start": "2026-11-16T15:00:00Z"},
+                    "remaining_events": [{"event_id": "a", "title": "Stand-up", "start_local": "09:00"},
+                                         {"event_id": "b", "title": "Review", "start_local": "10:00"}]}
+        ev = (evidence("calendar.schedule", "schedule_today", schedule),
+              evidence("calendar.event.b", "event", {"title": "Review", "start_local": "10:00",
+                                                     "start": "2026-11-16T16:00:00Z"}),
+              evidence("weather.event", "forecast_event", {"condition": "rainy",
+                                                           "precipitation_probability": 70}))
+        morning = model_view(snapshot("morning", ev, {"local_time": "07:45"}))
+        [sched] = [e for e in morning["evidence"] if e["id"] == "calendar.schedule"]
+        self.assertEqual(sched["next_event"], {"title": "Stand-up", "start": "09:00"})
+        self.assertEqual(sched["later"], [{"title": "Review", "start": "10:00"}])
+        self.assertNotIn("local_time", morning.get("facts", {}))  # quoted as an event time on the board
+        prep = snapshot("preparation", ev, {"minutes_until_event": 22, "event_in_ms": 1320000})
+        view = model_view(prep)
+        self.assertEqual([e["id"] for e in view["evidence"]], ["calendar.event.b", "weather.event"])
+        self.assertEqual(view["facts"], {"minutes_until_event": 22})
+        # The model writes only the text; code fills in the category and the
+        # evidence it was shown.
+        self.assertEqual(list(response_schema(prep)["properties"]), ["text"])
+
+    def test_evening_and_night_wording(self):
+        from contextcue_app.recommendation import model_view
+        ended = {"event_count": 4, "busy_ms": 11700000, "next_event": None,
+                 "current_events": [], "remaining_events": [], "all_day": ["Demo day"]}
+        night = {"condition": "sunny", "precipitation_probability": 0, "temperature_c": 7.9,
+                 "location": "Huntsville, Alabama", "night": True, "start_local": "21:00"}
+        ev = (evidence("calendar.schedule", "schedule_today", ended),
+              evidence("weather.now", "forecast_next", night))
+        view = model_view(snapshot("morning", ev, {}))
+        sched, wx = view["evidence"]
+        self.assertEqual(sched.get("events_left_today", 0), 0)
+        self.assertTrue(sched["no_more_events_today"])
+        self.assertNotIn("events_today", sched)  # never "4 events today" after they all ended
+        self.assertEqual(wx["condition"], "clear")
+        self.assertNotIn("from", wx)  # the current period's start read as the time of day
+        text = factual_fallback(snapshot("morning", ev, {})).text
+        self.assertIn("No more events today", text)
+        self.assertIn("clear", text)
+        self.assertNotIn("sunny", text)
+
+    def test_advice_follows_the_evidence(self):
+        from contextcue_app.engine import advice
+        rain = evidence("weather.event", "forecast_event", {"condition": "rainy", "precipitation_probability": 70,
+                                                            "temperature_c": 10})
+        dry = evidence("weather.now", "forecast_next", {"condition": "cloudy", "precipitation_probability": 10,
+                                                        "temperature_c": 12})
+        cold = evidence("weather.now", "forecast_next", {"condition": "sunny", "precipitation_probability": 0,
+                                                         "temperature_c": -2})
+        snow = evidence("weather.now", "forecast_next", {"condition": "snowy", "precipitation_probability": 60,
+                                                         "temperature_c": -2})
+        self.assertEqual(advice("preparation", (rain,)), ["Bring an umbrella"])
+        self.assertEqual(advice("morning", (dry,)), [])
+        self.assertEqual(advice("morning", (cold,)), ["Wear a warm coat"])
+        self.assertEqual(advice("morning", (snow,)), ["Bring an umbrella", "Dress for snow"])
+        self.assertEqual(advice("comfort", (), "hot"), ["Open a window or use a fan"])
+        self.assertEqual(advice("context_answer", (rain,), question="next_event"), [])
+        self.assertEqual(advice("context_answer", (rain,), question="rain_today"), ["Bring an umbrella"])
+
     def test_rejections(self):
         snap = snapshot()
         cases = {
             "unsupported_number:31": response("It is 31 degC."),
             "unknown_or_invalid_evidence": response("Warm.", ("sensor.humidity",)),
             "no_evidence": response("Warm.", ()),
+            # Stray tokens seen from the 0.8B model on the board (G1 benchmark).
+            "unexpected_characters": response("The room temperature is 27.无反顾"),
             "wrong_category": response("Warm.", category="morning"),
             "wrong_request": response("Warm.", request_id="other"),
             "empty_text": response("   "),
@@ -161,6 +232,14 @@ class LlamaClientTests(unittest.IsolatedAsyncioTestCase):
             def log_message(self, *a):
                 pass
 
+            def do_GET(self):
+                test.requests.append((self.path, None))
+                data = json.dumps({"data": [{"id": "stub-model"}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 test.requests.append((self.path, body))
@@ -189,9 +268,40 @@ class LlamaClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(validate_response(response, snap))
         path, body = self.requests[0]
         self.assertEqual(path, "/v1/chat/completions")
-        self.assertEqual(body["max_tokens"], 160)
+        self.assertEqual(body["max_tokens"], 100)
         self.assertNotIn("tools", body)  # the model never gets hardware tools
         self.assertIn("sensor.temperature", body["messages"][1]["content"])
+
+    async def test_request_is_compact_and_schema_constrained(self):
+        import json
+        from contextcue_app.recommendation import SYSTEM_PROMPT, LlamaCppModel
+        self.reply = ('{"category": "comfort", "text": "It is 27.4 degC in here.", '
+                      '"evidence_ids": ["sensor.temperature"]}')
+        model = LlamaCppModel(self.url, timeout_s=2)
+        snap = snapshot()
+        await model.complete(snap)
+        # The model name comes from the server, as the Brick serves one model.
+        self.assertEqual([p for p, _ in self.requests], ["/v1/models", "/v1/chat/completions"])
+        body = self.requests[1][1]
+        self.assertEqual(body["model"], "stub-model")
+        self.assertEqual(model.model_version, "stub-model")
+        # Fixed instructions first, unchanged, so the server can reuse them.
+        self.assertEqual(body["messages"][0], {"role": "system", "content": SYSTEM_PROMPT})
+        view = json.loads(body["messages"][1]["content"])
+        self.assertEqual(view["request"], {"category": snap.category})
+        self.assertEqual([e["id"] for e in view["evidence"]],
+                         [e.evidence_id for e in snap.evidence if e.quality == "valid"])
+        schema = body["response_format"]["json_schema"]["schema"]
+        self.assertEqual(schema["required"], ["text"])
+        self.assertFalse(schema["additionalProperties"])
+
+    async def test_warm_up_processes_the_instructions_and_never_raises(self):
+        from contextcue_app.recommendation import SYSTEM_PROMPT, LlamaCppModel
+        self.reply = ""
+        await LlamaCppModel(self.url, timeout_s=2).warm_up()
+        self.assertEqual(self.requests[-1][1]["messages"][0]["content"], SYSTEM_PROMPT)
+        self.assertEqual(self.requests[-1][1]["max_tokens"], 1)
+        await LlamaCppModel("http://127.0.0.1:9/v1", timeout_s=1).warm_up()  # unreachable: no error
 
     async def test_malformed_output_is_an_error(self):
         from contextcue_app.recommendation import LlamaCppModel
