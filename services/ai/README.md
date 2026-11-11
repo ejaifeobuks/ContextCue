@@ -1,4 +1,65 @@
-# AI service — planned, not implemented
+# AI service
+
+**Status (9 November 2026): running on the UNO Q.** The full app
+(`apps/contextcue`) declares the `arduino:llm` Brick and generates validated
+notices on the board with Qwen3.5-0.8B Q4_0 (llama.cpp, CPU only). The client,
+validator and fallback live in
+`services/application/contextcue_app/recommendation.py`.
+
+## G1 results (measured on the board)
+
+| Measurement | Result |
+|---|---|
+| Benchmark (`apps/llm-benchmark`, 30 cases) | 27/30 valid in JSON mode, 26/30 with a loose schema; p50 20 s, p95 25 s; first word p50 11 s |
+| App prompts (`scripts/ai-eval.py`, 8 requests: every notice type and question) | 8/8 valid; p50 22.8 s, max 23.7 s |
+| Live app, "Brief me" with real sensors | generated in about 29 s; sensor samples stayed fresh throughout (T02) |
+| Model server memory | peak 750 MiB of the 2.5 GB limit, with the prompt cache disabled |
+| Cold start | 37 s; the app warms the model up in the background at start |
+| Release deadline | 45 s (`GENERATION_TIMEOUT_S`); later replies become the labeled factual fallback |
+
+Model choice (same 8 app prompts with advice, on the board, 9 November):
+
+| | Qwen3.5-0.8B (chosen) | Gemma 3 1B |
+|---|---|---|
+| Valid replies | 8/8 | 4/8 (invented a 50% rain chance and a "60-70%" reading) |
+| p50 / max | 24.7 s / 55.6 s (first request, during warm-up) | 41.2 s / 66.8 s (beyond the 45 s deadline) |
+| Uses the advice | sometimes | more often |
+
+Gemma's wording was friendlier but half its replies would have become
+fallbacks, so it was removed from the board. Better wording is a prompt and
+advice-rule task, not a model change.
+
+Power: with the dock powered from a laptop USB-C port, the board reset within
+seconds of the model loading all four cores (no log, no watchdog, normal
+temperatures). Powering the dock from a mains charger fixed it.
+
+What made the 0.8B model usable:
+
+- A compact model view of each snapshot (titles, local times, readings with
+  units), about half the size; the validator still checks the full evidence.
+- Fixed instructions sent first, so llama.cpp reuses their processed prefix.
+- A JSON schema per request: the category is fixed and evidence IDs can only
+  name evidence the snapshot provides.
+- Greedy decoding and a plain-text check: at temperature 0.2 the model emitted
+  stray tokens from other scripts.
+- Code-calculated facts (`minutes_until_event`), the next event given
+  explicitly, and the current time hidden (it was quoted as an event time).
+
+Re-run the prompt evaluation on the board with
+`docker exec contextcue-main-1 sh -c "cd /app/python && /app/.cache/.venv/bin/python ai_eval.py"`.
+
+Still open: wording quality (Qwen often leaves out the advice or the later-rain
+time) and human review for T03.
+
+Known issue: after `arduino-app-cli app stop`/`start` of this app (or after
+another app ran), the MCU sometimes stays waiting and the Bridge reports
+`mcu_unresponsive`; App Lab builds the sketch in "Wait for App" mode. A reboot
+always recovers it.
+
+---
+
+*Original planning notes below.*
+
 
 Owns **RecommendationService** (SWE): the isolated, asynchronous, bounded LLM
 worker (baseline APP-06 to APP-08).
@@ -9,6 +70,23 @@ worker (baseline APP-06 to APP-08).
   results; produces labeled factual fallbacks; supports cancellation.
 - Has no hardware authority and no silent cloud fallback.
 - Uses the `contextcue_contracts` package (today in `apps/contextcue-hardware/python/`) for every cross-service type.
+
+### Latency fix (8 November, prompt version 2)
+
+- **Problem:** with live weather and the kiosk running, briefings took 32-45 s
+  and some hit the 45 s deadline. The board reads the prompt at 7-11
+  tokens/s and generates 2-4 tokens/s, on the CPU only (`--device none`).
+- **Cause:** the schema made the model echo `category` and `evidence_ids`,
+  about 25 of roughly 45-70 output tokens.
+- **Fix:**
+  - The schema is now `{"text"}` only. Code sets the category and cites the
+    evidence the model was shown.
+  - Numbers are still validated against that evidence.
+  - `max_tokens` is 100.
+- **Result:** four requests in a row on the board took 12.2-19.3 s, all
+  generated.
+- **Next:** streaming and AI-feature work are proposed in
+  [docs/planning/AI_EXPANSION_PLAN.md](../../docs/planning/AI_EXPANSION_PLAN.md).
 
 ## Existing solution: Arduino `arduino:llm` Brick
 

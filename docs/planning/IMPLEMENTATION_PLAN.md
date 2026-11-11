@@ -142,10 +142,15 @@ acceptable grounded generations) and the latency budget is the main unknown.
   components can be reused.
 - Screen: **Waveshare 7-inch** with USB touch (`0eef:0005`, WS170120) at
   **1024x600 on DP-1**, connected through a StarTech USB-C multiport dock.
-- There is **no `/sys/class/backlight` device**, so native brightness control
-  from Linux is unlikely. `set_display_level` should report unsupported and
-  the UI should use the baseline's visual dimming overlay.
-- Chromium is installed; `xinput` and an on-screen keyboard are not.
+- There is **no `/sys/class/backlight` device** and the panel has no DDC/CI,
+  but the panel is the **7inch HDMI LCD (C)** and its touch controller has a
+  vendor HID collection (usage page `0xFF00`, report ID 4, 63-byte output
+  report; see 8 November findings). Waveshare documents USB backlight
+  control for Rev4.1 of this panel, and the published (B) protocol is
+  `04 AA 01 00 00 00 <0-100>` written to that report. Until that is
+  confirmed on this unit, the UI keeps the visual dimming overlay.
+- Chromium is installed; `xinput` and a system on-screen keyboard are not.
+  Text entry (city search) uses ContextCue's own on-screen keyboard.
 - Arduino's **`web_ui` Brick** serves static HTML/JavaScript, REST endpoints
   and a Socket.IO WebSocket on port 7000, and declares
   `requires_display: webview`. Every reference app with a UI uses it.
@@ -197,6 +202,90 @@ the app play synthesized speech to the speaker's PipeWire node through the
   and `write()` ignores I2C errors. The library therefore cannot detect a
   disconnected output; ContextCue must probe the address itself, as it does
   for Distance.
+
+## Findings and fixes (8 November 2026)
+
+After live time and weather (M3/M4) went onto the board, five issues were
+investigated. The proposal for issue 4 is in
+[AI_EXPANSION_PLAN.md](AI_EXPANSION_PLAN.md).
+
+1. **Demo calendar empty in the evening (fixed).** The fixtures were not
+   overwritten (no diff in `fixtures/`). On the device clock they were moved
+   onto today with their daytime local times (09:00-16:00), so after 16:00
+   every event had ended and Glance showed none. The briefing still said
+   "4 events today". Now a scenario **replays from the moment it is chosen**:
+   its start time maps to the current minute (`demo_shift`). Choosing a
+   scenario again restarts it, and switching a source does not. Limitation:
+   events that would fall after local midnight count as tomorrow. "Demo Mode"
+   is still only a presentation toggle (UI plan rule 8); the data sources are
+   chosen under Calendar & Weather.
+2. **Briefing at night (fixed).** The text that looked invented was the
+   labelled *factual fallback*, shown after the model hit its 45 s deadline.
+   Its facts were real but misleading: the whole-day count of demo events
+   that had all ended, and "sunny" at 21:00. Fallback and model view now
+   count only events still ahead ("Demo calendar: No more events today"),
+   say "clear" at night (`night` flag on forecast evidence, same 18:00-06:00
+   rule as the UI), and no longer show the model the current period's start
+   time (the model quoted it as "the current time is 21:00").
+   **Timeout:** the model reads about 7-11 tokens/s and writes 2-4 tokens/s
+   on the CPU. Replies took 32-45 s because the JSON schema made the model
+   echo the category and every evidence ID (about 25 extra output tokens).
+   The schema now holds only `text`, and code fills in the category and the
+   evidence shown. Numbers are still checked against that evidence.
+   `max_tokens` dropped from 160 to 100. On the board, four requests in a
+   row took 12-19 s, all generated, none timed out. CPU contention from the
+   kiosk costs about 10-25% (measured by pausing Chromium).
+3. **City entry needed a physical keyboard (fixed).** The on-screen keyboard
+   only opened from a separate "Keyboard" button, and a settings re-render
+   could clear the typed text (the input had no value binding). Tapping the
+   field now opens the keyboard. The text survives re-renders. The keyboard
+   has a Search key and `- ' . ,` keys, and results appear after a pause in
+   typing. No system keyboard is needed: Chromium has none here, and an
+   in-page keyboard also works in kiosk mode.
+4. **AI role:** see [AI_EXPANSION_PLAN.md](AI_EXPANSION_PLAN.md).
+5. **Hardware brightness (tested: not supported on this unit).** Details below.
+
+6. **Live calendar (M5, implemented).** `calendar_ics.IcsCalendarAdapter`
+   reads a subscription link with `icalendar` 7.3.0 and
+   `recurring-ical-events` 3.8.2 (in the app's `requirements.txt`). It
+   handles recurrence rules, EXDATE, moved occurrences, time zones, floating
+   times, all-day and cancelled events, for today and tomorrow (local). It
+   refreshes in the background every 10 minutes, is stale after 2 hours
+   without a refresh, and re-expands from the cached file at midnight. The
+   provider (Google, Microsoft 365 or other) is detected from the link's
+   host. Connect it from Settings (pasted through the SSH tunnel) or with
+   `scripts/contextcue-app.sh calendar-link`. On the board (8 November), a
+   public Google calendar connected in 1.2-1.5 s and showed as "Google
+   Calendar, real, valid"; a wrong link was refused with `http_404`.
+
+### Display backlight
+
+| Path | Result on this board |
+|---|---|
+| `/sys/class/backlight` | None (an HDMI panel behind a USB-C dock) |
+| DDC/CI (`ddcutil`) | Not available. The (C) panel does not implement DDC/CI |
+| `xrandr --brightness` | Gamma only: the same as the CSS overlay, and the backlight stays at full power |
+| **USB HID report 4** | The descriptor has the vendor output report that Waveshare's brightness tools use. Tested 8 November: the panel (`/dev/hidraw3`) accepted the 64-byte reports for 20%, 10% and 50%, but the backlight did not change. This revision ignores the published (B) command |
+
+**Decision:** keep the visual dimming overlay. The panel's backlight stays at
+full power, so the overlay can only darken pixels. If a later panel revision
+accepts the command, the integration is:
+
+1. A udev rule, installed once:
+   `SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0eef", ATTRS{idProduct}=="0005", MODE="0660", GROUP="video"`.
+2. A host-side helper, started by the same XDG autostart entry as the kiosk.
+   The app container cannot open the device: hidraw has major number 509,
+   which is not in App Lab's `device_cgroup_rules`. The app writes the target
+   level (0-100) to `data/display.json`. The helper watches it and writes the
+   HID report, sending only on a change and at most twice per second.
+3. The existing `rules.brightness()` output (0.2-1.0) maps to the backlight
+   level. The CSS overlay is kept only as a fallback when the helper is
+   missing or reports an error. Health shows "Backlight: hardware" or
+   "Backlight: visual dimming".
+4. If the panel ignores the command (an older revision), the remaining
+   hardware route is the PWM solder pads on the panel's driver board, driven
+   from an MCU PWM pin. That needs soldering and is out of scope before demo
+   day.
 
 ## Remaining work
 
@@ -520,21 +609,22 @@ Buzzer physically changed.
 | Question | Blocks | How to resolve |
 |---|---|---|
 | Can a 0.8B/1B model meet T03 grounding and the latency budget? | APP-06 to APP-08 | Benchmark (A) |
-| Does the llama.cpp runner accept JSON-schema constrained output? | Validator design | Direct endpoint test during (A) |
-| Does the UNO Q runner use the Hexagon DSP or only the CPU? | Latency expectations | Inspect the runner and measure during (A) |
+| Does the llama.cpp runner accept JSON-schema constrained output? | Validator design | Resolved: yes. The schema now holds only `text` (8 November) |
+| Does the UNO Q runner use the Hexagon DSP or only the CPU? | Latency expectations | Resolved: CPU only. `llamacpp-runner` 0.13.2 starts with `--device none`; there are no fastrpc device nodes |
 | Does stopping a stream free the server immediately? | APP-07 cancellation | Test during (A) |
 | Which TTS engine, and how is it installed in an app container? | APP-15 | Trial both engines (D) |
 | Does an app container reach PipeWire and the Bluetooth node? | APP-15, T06 | Playback test (D) |
 | Can an app container reach BlueZ over D-Bus for in-app pairing and status, or must pairing stay in Blueman? | APP-15 pair/select UI | Test (D) |
 | How is speech volume set from the app (PipeWire node volume)? | Touch volume control | Test (D) |
 | How does App Lab show a `web_ui` app on the board display, and can it start at boot in kiosk mode? | APP-02, APP-03 | Test (D) |
-| Is any native brightness control available (DDC/CI or the panel's own controls)? | Brightness policy | Check the Waveshare model (D) |
+| ~~Does the panel accept the USB HID backlight command?~~ | Hardware brightness | Resolved 8 November: no, the backlight ignores it; the overlay stays |
 | Does the Distance rate reach 10 Hz alongside Light? | Proximity timing | Measure (C) |
 | Do all five Modulinos coexist on the Qwiic chain without address or power problems? | B, C | Bring-up gate (B) |
 | Replacement Pixels module (the current one is faulty: no I2C response, no pass-through, hangs the bus alone) | Pixels output, HW-03, T02/T05 | Order and fit a replacement |
 | Report the Arduino_LTR381RGB `ir/rawlux` divide-by-zero upstream? | Removes the trap workaround in 0.2.3 | Open an issue with the SWD evidence |
 | Long-idle interval, unknown-Distance behavior, away-mode grace, return summary, important-repeat count | Notification policy | Product decision before Phase 10 |
-| Clerk scopes, token lifecycle and Open-Meteo attribution/rate rules | Live adapters (post-demo) | Provider gate |
+| ~~Calendar connection method~~ | Live calendar | Resolved 8 November: subscription link (ICS) first, OAuth as stage 2 (CONFLICT_RESOLUTION_REVIEW 9a) |
+| OAuth stage 2: Microsoft device-code flow, Google redirect flow, token storage | Fresher, revocable calendar access (post-demo) | Provider gate |
 
 ## Completed work record
 

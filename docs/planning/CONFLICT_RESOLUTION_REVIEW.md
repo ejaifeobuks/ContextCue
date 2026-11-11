@@ -386,6 +386,44 @@ automatic-audio suppression, bounded-duration, and output-lease rules.
 
 ---
 
+## 9a. Calendar connection: subscription link before OAuth (8 November 2026)
+
+### Difference
+
+The baseline connects Google Calendar and Microsoft 365 through Clerk-managed
+OAuth. That needs a Clerk account, provider app registrations, HTTPS redirect
+URLs and a sign-in flow on a kiosk with no keyboard. None of that exists, and
+it is not needed to read one person's calendar on one desk device.
+
+### Decision
+
+The live calendar uses the calendar's **subscription link (ICS)**: Google's
+"Secret address in iCal format", Outlook's "Publish a calendar" ICS link, or
+any https/webcal ICS link. The link is treated as a bearer secret:
+
+- It is stored apart from settings and kept by "Clear data".
+- It is never returned to the UI, logged or included in errors. Only its host
+  is shown.
+
+It is entered from a laptop through the SSH tunnel, or with
+`scripts/contextcue-app.sh calendar-link` on the board, which reads it without
+echoing it. A failed or missing link is shown as stale, unavailable or
+disabled, never as demo data.
+
+Accepted trade-offs:
+
+- Read-only access.
+- Google's link can lag edits by minutes to hours.
+- A Microsoft 365 organisation may block publishing.
+- A leaked link exposes the calendar until it is reset.
+
+OAuth remains the stage 2 option if fresher data or revocable, scoped access
+is needed. Microsoft Graph supports a device-code sign-in with
+`Calendars.Read`. For Google, whether the limited-input device flow allows
+calendar scopes is unverified; it may need a browser redirect.
+
+---
+
 ## 10. Overall reconciliation
 
 The earlier prototype plan and later baseline share the same broad product
