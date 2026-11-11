@@ -70,6 +70,8 @@ build() {
   mkdir -p "$dest/python/apps/contextcue-hardware/python" \
            "$dest/python/services/application" "$dest/python/services/ui"
   cp "$TEMPLATE/python/main.py" "$TEMPLATE/python/requirements.txt" "$dest/python/"
+  # Prompt evaluation against the app's own model server (docker exec ... ai_eval.py).
+  cp "$ROOT/scripts/ai-eval.py" "$dest/python/ai_eval.py"
   copy_tree "$ROOT/apps/contextcue-hardware/sketch" "$dest/sketch"
   for package in contextcue_contracts contextcue_hardware; do
     copy_tree "$ROOT/apps/contextcue-hardware/python/$package" \

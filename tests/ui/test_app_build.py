@@ -29,7 +29,7 @@ class AppBuildTests(unittest.TestCase):
         result = self.build(self.app)
         self.assertEqual(result.returncode, 0, result.stderr)
         for relative in ("app.yaml", "README.md", "sketch/sketch.ino", "sketch/sketch.yaml",
-                         "python/main.py", "python/requirements.txt", "python/build_info.txt",
+                         "python/main.py", "python/requirements.txt", "python/build_info.txt", "python/ai_eval.py",
                          "python/services/ui/main.py", "python/services/ui/assets/index.html",
                          "python/services/ui/assets/icons/sprite.svg",
                          "python/services/application/fixtures/demo_scenarios.json",
@@ -45,6 +45,23 @@ class AppBuildTests(unittest.TestCase):
                                capture_output=True, text=True, timeout=30, cwd=self.tmp)
         self.assertEqual(check.returncode, 0, check.stderr)
         self.assertIn("--simulated", check.stdout)
+
+    def test_entry_point_asks_for_the_declared_model(self):
+        # The model server lists every downloaded model (Qwen first), so the
+        # app must name the one app.yaml declares or it silently uses another.
+        self.assertEqual(self.build(self.app).returncode, 0)
+        sys.path.insert(0, str(self.app / "python"))
+        try:
+            import importlib
+            import main
+            importlib.reload(main)
+            self.assertEqual(main.declared_model(self.app / "app.yaml"), "Qwen3.5-0.8B-Q4_0")
+            (self.app / "app.yaml").write_text("bricks:\n  - arduino:llm:\n      model: llamacpp:gemma-3-1b-it-Q4_0\n")
+            self.assertEqual(main.declared_model(self.app / "app.yaml"), "gemma-3-1b-it-Q4_0")
+            self.assertIsNone(main.declared_model(self.app / "missing.yaml"))
+        finally:
+            sys.path.remove(str(self.app / "python"))
+            sys.modules.pop("main", None)
 
     def test_rebuild_keeps_data_and_cache(self):
         self.assertEqual(self.build(self.app).returncode, 0)

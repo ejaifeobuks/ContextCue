@@ -9,6 +9,7 @@ Settings, notices and logs persist in the app's data/ folder, which builds
 and redeploys leave untouched.
 """
 
+import re
 import runpy
 import sys
 from pathlib import Path
@@ -16,6 +17,17 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 DATA = HERE.parent / "data"
 ENTRY = HERE / "services" / "ui" / "main.py"
+MODEL_URL = "http://llamacpp-models-runner:9999/v1"
+
+
+def declared_model(app_yaml: Path) -> str | None:
+    """The model the arduino:llm Brick was given in app.yaml. The server lists
+    every downloaded model, so the app must ask for this one by name."""
+    try:
+        match = re.search(r"^\s*model:\s*llamacpp:(\S+)\s*$", app_yaml.read_text(encoding="utf-8"), re.M)
+    except OSError:
+        return None
+    return match.group(1) if match else None
 
 
 def main() -> None:
@@ -28,7 +40,12 @@ def main() -> None:
     # Real HardwareGateway (no --simulated). Listen on all container interfaces
     # so the UI is reachable from the board and through an SSH tunnel.
     sys.argv = [str(ENTRY), "--host", "0.0.0.0", "--port", "7000",
-                "--db", str(DATA / "contextcue.db")]
+                "--db", str(DATA / "contextcue.db"),
+                # The arduino:llm Brick declared in app.yaml (on-board, CPU).
+                "--model-url", MODEL_URL]
+    model = declared_model(HERE.parent / "app.yaml")
+    if model:
+        sys.argv += ["--model-name", model]
     runpy.run_path(str(ENTRY), run_name="__main__")
 
 
