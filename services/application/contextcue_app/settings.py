@@ -38,7 +38,7 @@ class Settings:
     brightness_override: float | None = None  # 0.2-1.0, None = automatic
     light_dark_lux: float = 10.0
     light_bright_lux: float = 400.0
-    calendar_source: str = "fixture"  # fixture | google | microsoft365
+    calendar_source: str = "fixture"  # fixture | google | microsoft365 | ics
     weather_source: str = "fixture"  # fixture | open_meteo
     # Forecast location chosen by the user (never inferred): name, region,
     # country, latitude, longitude, time_zone. None until one is chosen.
@@ -96,7 +96,7 @@ class Settings:
             raise ValueError("brightness_override must be 0.2-1.0 or automatic")
         if not 0 <= self.light_dark_lux < self.light_bright_lux:
             raise ValueError("Light references must satisfy dark < bright")
-        if self.calendar_source not in ("fixture", "google", "microsoft365"):
+        if self.calendar_source not in ("fixture", "google", "microsoft365", "ics"):
             raise ValueError("Unknown calendar source")
         if self.weather_source not in ("fixture", "open_meteo"):
             raise ValueError("Unknown weather source")

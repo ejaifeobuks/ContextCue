@@ -1,8 +1,8 @@
 """Calendar and weather adapters behind one contract (plan 9.2).
 
-Fixture adapters are the only sources for the demonstration: deterministic,
-fictional and labeled `simulated`. Live adapters (Google, Microsoft 365,
-Open-Meteo) report `disabled` until they are implemented and connected; they
+Fixture adapters are deterministic, fictional and labeled `simulated`. Live
+adapters (calendar_ics.IcsCalendarAdapter, weather.OpenMeteoWeatherAdapter)
+report `disabled` until connected and `stale`/`unavailable` on failure; they
 never fall back to fixture data.
 """
 
@@ -137,25 +137,6 @@ class FixtureWeatherAdapter(_FixtureBase):
         return self._result(now, periods, self.data.get("label", "Fictional demo forecast"))
 
 
-class UnconnectedLiveAdapter:
-    """Placeholder for Google Calendar, Microsoft 365 and Open-Meteo.
-
-    Reports `disabled` so the UI can show the choice honestly; it never returns
-    fixture data in place of a live source.
-    """
-
-    source_mode = "real"
-
-    def __init__(self, source_id: str, kind: str, label: str):
-        self.source_id = source_id
-        self.kind = kind
-        self.label = label
-
-    def fetch(self, now: datetime) -> SourceResult:
-        return SourceResult(self.source_id, self.kind, "real", "disabled",
-                            "live_adapter_not_connected", None, iso(now), None, self.label, ())
-
-
 def demo_shift(scenario: Scenario, now: datetime) -> Shift:
     """Replay `scenario` from `now`: its start time maps to the current minute.
     All-day dates move by the matching number of local days."""
@@ -165,11 +146,14 @@ def demo_shift(scenario: Scenario, now: datetime) -> Shift:
     return delta, days
 
 
-def make_calendar_adapter(setting: str, scenario: Scenario, *, shift: Shift | None = None):
+def make_calendar_adapter(setting: str, scenario: Scenario, *, shift: Shift | None = None,
+                          link: str | None = None, zone: ZoneInfo | None = None):
+    """Demo fixture, or the live subscription-link adapter (`link` None means
+    not connected yet: reported as disabled, never as demo data)."""
     if setting == "fixture":
         return FixtureCalendarAdapter(scenario.calendar, shift)
-    names = {"google": "Google Calendar", "microsoft365": "Microsoft 365 Calendar"}
-    return UnconnectedLiveAdapter(f"live-{setting}", "calendar", names.get(setting, setting))
+    from .calendar_ics import IcsCalendarAdapter
+    return IcsCalendarAdapter(setting, link, zone or ZoneInfo(scenario.time_zone))
 
 
 def make_weather_adapter(setting: str, scenario: Scenario, *, shift: Shift | None = None,

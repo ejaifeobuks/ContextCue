@@ -168,7 +168,13 @@
     distance_timeout: "Nothing in range of the Distance sensor.",
     no_sample_yet: "Waiting for the first reading.",
     no_location_set: "Choose a forecast location in Settings, Calendar & Weather.",
-    fetching: "Getting the forecast…",
+    fetching: "Getting the latest data…",
+    calendar_not_connected: "Connect your calendar's subscription link in Settings, Calendar & Weather.",
+    not_a_calendar: "The link did not return a calendar. Check that it is the ICS (iCal) link.",
+    calendar_too_large: "The calendar is too large to download (over 5 MB).",
+    http_401: "The calendar link was refused (401). It may have been reset; paste the new one.",
+    http_403: "The calendar link was refused (403). It may have been reset; paste the new one.",
+    http_404: "The calendar link no longer exists (404). Paste the current link.",
     malformed_forecast: "The weather service sent an unexpected reply; retrying.",
     distance_bus_error: "The Distance sensor stopped answering mid-read. Retrying automatically.",
     i2c_bus_stalled: "Something is holding the sensor bus. Readings pause and resume on their own.",
@@ -181,7 +187,9 @@
     // Gateway module codes: thermo_not_found, light_disconnected, pixels_not_found ...
     if (/_not_found$/.test(item.reason)) return "Not detected on the I2C bus. Check its cable and connector.";
     if (/_disconnected$/.test(item.reason)) return "Stopped answering on the I2C bus. Check its cable.";
-    if (/^network_error/.test(item.reason)) return "Could not reach the weather service; showing the last forecast while it lasts.";
+    if (/^network_error/.test(item.reason)) return "Could not reach the service; showing the last data while it is still fresh.";
+    if (/^parse_error/.test(item.reason)) return "The calendar could not be read; retrying.";
+    if (/^http_\d+$/.test(item.reason)) return `The calendar service answered with an error (${item.reason.slice(5)}); retrying.`;
     return cap(item.reason);
   }
 

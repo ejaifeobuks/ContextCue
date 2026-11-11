@@ -297,7 +297,7 @@ class FaultsAndOutputs(AppHarness):
         await self.step()
         vm = self.app.view_model()
         self.assertEqual(vm["schedule"]["quality"], "disabled")
-        self.assertEqual(vm["schedule"]["error"], "live_adapter_not_connected")
+        self.assertEqual(vm["schedule"]["error"], "calendar_not_connected")
 
     async def test_view_model_labels(self):
         self.build("quiet_hours")

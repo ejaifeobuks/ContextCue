@@ -220,6 +220,19 @@ class DataRepository:
             tables.append("settings")
         self._tx([(f"DELETE FROM {t}", ()) for t in tables])
 
+    # ------------------------------------------------------------- secrets
+    # Kept in `meta`, apart from settings: never in the view model, logs or
+    # exports, and kept by "Clear data" (like settings).
+    def save_secret(self, name: str, value: str | None) -> None:
+        if value is None:
+            self._tx([("DELETE FROM meta WHERE key = ?", (f"secret:{name}",))])
+        else:
+            self._tx([("INSERT OR REPLACE INTO meta VALUES (?, ?)", (f"secret:{name}", value))])
+
+    def load_secret(self, name: str) -> str | None:
+        rows = self._query("SELECT value FROM meta WHERE key = ?", (f"secret:{name}",))
+        return rows[0][0] if rows else None
+
     def close(self) -> None:
         with self._lock:
             self._db.close()

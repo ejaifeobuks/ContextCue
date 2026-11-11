@@ -1,1 +1,4 @@
 arduino-router-bridge==0.5.1
+# Live calendar (subscription link): recurrence rules, exceptions, time zones.
+icalendar==7.3.0
+recurring-ical-events==3.8.2

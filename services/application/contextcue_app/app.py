@@ -103,7 +103,8 @@ class ContextCueApp:
     # --------------------------------------------------------------- loop
     def _make_sources(self) -> None:
         s = self.settings
-        self._calendar = make_calendar_adapter(s.calendar_source, self.scenario, shift=self._shift)
+        self._calendar = make_calendar_adapter(s.calendar_source, self.scenario, shift=self._shift,
+                                               link=self.repo.load_secret("calendar_link"), zone=s.zone)
         self._weather = make_weather_adapter(s.weather_source, self.scenario, shift=self._shift,
                                              location=s.location)
 
@@ -426,11 +427,37 @@ class ContextCueApp:
         except ValueError as exc:
             raise ActionError(str(exc)) from exc
         sources_changed = (updated.calendar_source != self.settings.calendar_source
-                           or updated.weather_source != self.settings.weather_source)
+                           or updated.weather_source != self.settings.weather_source
+                           or updated.time_zone != self.settings.time_zone)  # floating calendar times
         self._save_settings(updated)
         if sources_changed:
             self._make_sources()
         return {"status": "saved"}
+
+    async def _act_calendar_connect(self, payload):
+        """Check a calendar subscription link once, then store it as a secret
+        and switch the calendar to it. The link is never returned or logged."""
+        from .calendar_ics import CalendarLinkError, check_link, normalize_link, provider_for
+        try:
+            link = normalize_link(payload.get("link"))
+            count = await asyncio.to_thread(check_link, link, self.clock.now(), self.settings.zone)
+        except CalendarLinkError as exc:
+            raise ActionError(f"Calendar link not accepted: {exc}") from None
+        except ImportError:
+            raise ActionError("Calendar support is not installed (icalendar)") from None
+        except Exception as exc:
+            raise ActionError(f"Calendar link not accepted: {type(exc).__name__}") from None
+        provider = provider_for(link)
+        self.repo.save_secret("calendar_link", link)
+        self._save_settings(self.settings.updated({"calendar_source": provider}))
+        self._make_sources()
+        return {"status": "connected", "provider": provider, "events": count}
+
+    def _act_calendar_disconnect(self, payload):
+        self.repo.save_secret("calendar_link", None)
+        self._save_settings(self.settings.updated({"calendar_source": "fixture"}))
+        self._make_sources()
+        return {"status": "disconnected"}
 
     async def _act_location_search(self, payload):
         from .weather import search_locations
@@ -536,6 +563,11 @@ class ContextCueApp:
         return {"status": "set", "target": target, "active": active}
 
     # --------------------------------------------------------- view model
+    def _calendar_link_view(self) -> dict:
+        from .calendar_ics import link_host
+        link = self.repo.load_secret("calendar_link")
+        return {"connected": bool(link), "host": link_host(link)}
+
     def view_model(self) -> dict[str, Any]:
         s = self.settings
         now = self.clock.now()
@@ -585,6 +617,8 @@ class ContextCueApp:
             "audio": {**self.notifications.speech.status(), "volume": s.speech_volume,
                       "policy": s.audio_policy, "buzzer_enabled": s.buzzer_enabled},
             "settings": s.to_dict(),
+            # Only whether a link is stored and its host; never the link itself.
+            "calendar_link": self._calendar_link_view(),
             "questions": SUPPORTED_QUESTIONS,
             "simulation": {
                 "scenario_id": self.scenario.scenario_id, "scenario_title": self.scenario.title,

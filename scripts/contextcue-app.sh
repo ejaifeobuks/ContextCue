@@ -12,6 +12,9 @@
 #                                           open the UI full screen on the board display
 #   scripts/contextcue-app.sh autostart on|off|status
 #                                           start the app and the kiosk at every boot
+#   scripts/contextcue-app.sh calendar-link connect a calendar subscription (ICS) link
+#   scripts/contextcue-app.sh calendar-link --remove
+#                                           delete the stored link (back to the demo calendar)
 #
 # App Lab mounts only an app's own folder into its container, so the code the
 # app needs (services/, the hardware gateway, the firmware sketch) is copied
@@ -171,7 +174,43 @@ autostart() {
   esac
 }
 
+# Send one action to the running app. The payload JSON arrives on stdin, so a
+# secret (the calendar link) never appears in the process list or history.
+post_action() {  # post_action URL ACTION < payload.json
+  python3 -c '
+import json, sys, urllib.error, urllib.request
+url, action = sys.argv[1], sys.argv[2]
+body = json.dumps({"action": action, "payload": json.load(sys.stdin)}).encode()
+request = urllib.request.Request(url + "/api/action", body, {"Content-Type": "application/json"})
+try:
+    reply = json.load(urllib.request.urlopen(request, timeout=60))
+except urllib.error.HTTPError as exc:
+    sys.exit("contextcue-app: " + json.load(exc).get("error", f"HTTP {exc.code}"))
+print(json.dumps(reply))
+' "$1" "$2"
+}
+
+calendar_link() {
+  local url link
+  url="$(app_url)" || die "ContextCue is not running (scripts/contextcue-app.sh run)"
+  if [ "${1:-}" = "--remove" ]; then
+    echo '{}' | post_action "$url" calendar_disconnect
+    return
+  fi
+  echo "Google Calendar: Settings > your calendar > Secret address in iCal format."
+  echo "Outlook: Settings > Calendar > Shared calendars > Publish a calendar > ICS link."
+  printf "Paste the link (it is not shown), then press Enter: "
+  IFS= read -rs link
+  echo
+  [ -n "$link" ] || die "No link entered"
+  LINK="$link" python3 -c 'import json, os; print(json.dumps({"link": os.environ["LINK"]}))' \
+    | post_action "$url" calendar_connect
+}
+
 case "${1:-}" in
+  calendar-link)
+    calendar_link "${2:-}"
+    ;;
   build)
     build "${2:-}"
     ;;
@@ -208,7 +247,7 @@ case "${1:-}" in
     autostart "${2:-status}"
     ;;
   *)
-    sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
     ;;
 esac

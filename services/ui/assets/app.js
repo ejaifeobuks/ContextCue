@@ -19,7 +19,7 @@ const state = {
   whyOpen: null, whyDetails: false, sheet: null, dialog: null,
   demo: loadDemo(), diagOpen: false, techOpen: false,
   // Forecast location search (Settings > Calendar & Weather).
-  locQuery: "", locResults: null, locBusy: false, locError: "", locKeyboard: false,
+  locQuery: "", locResults: null, locBusy: false, locError: "", locKeyboard: false, calBusy: false, calLink: "",
   dragging: false, lastTouch: 0, layout: null,
 };
 
@@ -118,7 +118,8 @@ function render() {
   renderHeader(d);
   $("#dim").style.opacity = String(Math.max(0, (1 - d.display.screen_level) * 0.75).toFixed(2));
   if (state.tab === "glance") renderGlance(d);
-  else if (!state.dragging) renderSettings(d);
+  // Not while a link is being pasted: a re-render would empty the field.
+  else if (!state.dragging && !(document.activeElement && document.activeElement.id === "cal-link")) renderSettings(d);
   renderSheet(d);
   renderDialog();
 }
@@ -425,9 +426,16 @@ function secSources(d) {
     : pill(x.quality === "stale" ? "warn" : "bad", x.quality === "stale" ? "Out of date" : "Unavailable");
   const loc = s.location;
   const live = s.weather_source === "open_meteo";
+  const link = d.calendar_link || {};
+  const liveCal = s.calendar_source !== "fixture";
   return group("Calendar", `
-    ${field("Calendar source", s.calendar_source === "fixture" ? "Fictional demo calendar" : "Live calendar adapter not connected yet", seg("calendar_source", s.calendar_source, [["fixture", "Demo"], ["google", "Google"], ["microsoft365", "Microsoft 365"]]))}
-    ${field("Status", sc ? esc(sc.label) : "", sourceState(sc))}`, "calendar")
+    ${field("Calendar source", !liveCal ? "Fictional demo calendar"
+      : link.connected ? `Your calendar, via its subscription link (${esc(link.host || "")}), refreshed every 10 minutes`
+      : "Live calendar: connect a subscription link below",
+      link.connected ? seg("calendar_source", liveCal ? "live" : "fixture", [["fixture", "Demo"], ["live", "Live"]])
+        : seg("calendar_source", s.calendar_source === "fixture" ? "fixture" : "live", [["fixture", "Demo"], ["live", "Live"]]))}
+    ${field("Status", sc ? esc(sc.label) + (sc.error ? " · " + esc(L.healthHint({ reason: sc.error })) : "") : "", sourceState(sc))}
+    ${calendarConnect(link)}`, "calendar")
     + group("Weather", `
     ${field("Weather source", !live ? "Fictional demo forecast" : loc ? "Live forecast from Open-Meteo.com, refreshed every 30 minutes"
       : "Live forecast from Open-Meteo.com: choose a location below", seg("weather_source", s.weather_source, [["fixture", "Demo"], ["open_meteo", "Live (Open-Meteo)"]]))}
@@ -436,6 +444,27 @@ function secSources(d) {
     ${field("Location", loc ? `Chosen by you · time zone ${esc(loc.time_zone)}` : "Not set. ContextCue never guesses your location.",
       `<strong>${esc(loc ? [loc.name, loc.region, loc.country].filter(Boolean).join(", ") : "None")}</strong>`)}
     ${locationSearch()}`, "map-pin");
+}
+
+function providerFor(host) {
+  host = (host || "").toLowerCase();
+  if (host.endsWith("calendar.google.com")) return "google";
+  if (host.startsWith("outlook.") || host.endsWith("office365.com") || host.endsWith("outlook.com")) return "microsoft365";
+  return "ics";
+}
+
+function calendarConnect(link) {
+  if (link.connected) {
+    return field("Subscription link", `Connected to ${esc(link.host || "a calendar")}. The link is stored on the board and never shown.`,
+      `<button class="btn" data-action="cal-disconnect">${icon("x")}Disconnect</button>`);
+  }
+  return `<div class="field col"><div class="name">Connect your calendar<small>
+      Google Calendar (web): Settings → your calendar → <em>Secret address in iCal format</em>.
+      Outlook: Settings → Calendar → Shared calendars → <em>Publish a calendar</em> → ICS link.
+      Paste it here from a laptop (SSH tunnel), or on the board run <code>scripts/contextcue-app.sh calendar-link</code>.
+      The link gives read access to your calendar: keep it private.</small></div>
+    <div class="loc-search"><input id="cal-link" type="password" autocomplete="off" spellcheck="false" placeholder="https://… or webcal://…" aria-label="Calendar subscription link">
+      <button class="btn primary" data-action="cal-connect" ${state.calBusy ? "disabled" : ""}>${icon("calendar")}${state.calBusy ? "Checking…" : "Connect"}</button></div></div>`;
 }
 
 const KEY_ROWS = ["QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM-'.,"];
@@ -645,6 +674,10 @@ document.addEventListener("click", async (ev) => {
     let value = JSON.parse(t.dataset.value);
     if (t.dataset.set === "scenario") return act("sim_scenario", { scenario_id: value });
     if (t.dataset.set === "brightness_override" && value === "auto") value = null;
+    if (t.dataset.set === "calendar_source" && value === "live") {
+      if (!(d.calendar_link || {}).connected) { toast("Connect a calendar link first", true); return; }
+      value = providerFor(d.calendar_link.host);
+    }
     return act("settings", { changes: { [t.dataset.set]: value } });
   }
   if (t.dataset.step) return setStep(t.dataset.step, Number(t.dataset.delta));
@@ -695,6 +728,18 @@ document.addEventListener("click", async (ev) => {
     case "tech-toggle": state.techOpen = !state.techOpen; return render();
     case "loc-kb-toggle": state.locKeyboard = !state.locKeyboard; return render();
     case "loc-search": return searchLocation();
+    case "cal-connect": {
+      const box = $("#cal-link");
+      const value = ((box && box.value) || state.calLink).trim();
+      if (!value) { toast("Paste the calendar's subscription link first", true); return; }
+      state.calBusy = true; render();
+      const res = await act("calendar_connect", { link: value }, true);
+      state.calBusy = false;
+      if (res) { state.calLink = ""; toast(`Calendar connected: ${res.events} events today and tomorrow`); }
+      return render();
+    }
+    case "cal-disconnect":
+      return confirmDialog("Disconnect calendar?", "The stored link is deleted and the demo calendar is used.", "Disconnect", () => act("calendar_disconnect"), true);
   }
 });
 
@@ -735,6 +780,7 @@ function scheduleLocSearch() {
 }
 document.addEventListener("input", (ev) => {
   if (ev.target.id === "loc-q") state.locQuery = ev.target.value.slice(0, 60);
+  if (ev.target.id === "cal-link") state.calLink = ev.target.value.slice(0, 2048);
   if (ev.target.id === "volume") $("#vol-val").textContent = `${ev.target.value}%`;
   if (ev.target.dataset.sensor) {
     const u = { temperature: "°C", humidity: "%RH", ambient_light: "lux", distance: "mm" };
