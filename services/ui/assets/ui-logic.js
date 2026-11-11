@@ -67,14 +67,20 @@
     foggy: { icon: "cloud-fog", text: "Foggy" },
   };
 
-  function weatherVisual(forecast) {
+  // `night` (the period is after dark, local time) turns "sunny" into a clear
+  // night: Open-Meteo's clear-sky code maps to sunny around the clock.
+  function weatherVisual(forecast, night = false) {
     if (!forecast) return { icon: "cloud-off", text: "No forecast source", known: false };
     if (forecast.quality === "stale") return { icon: "cloud-off", text: "Forecast out of date", known: false };
     if (forecast.quality !== "valid") return { icon: "cloud-off", text: "Forecast unavailable", known: false };
     const hit = WEATHER[forecast.condition];
     if (!hit) return { icon: "circle-help", text: "Unknown conditions", known: false };
+    if (night && forecast.condition === "sunny") return { icon: "moon", text: "Clear", known: true };
     return { ...hit, known: true };
   }
+
+  // Night for weather wording: a local hour from 18:00 to 05:59.
+  function isNightHour(hour) { return Number.isFinite(hour) && (hour >= 18 || hour < 6); }
 
   /* ------------------------------------------------------------- sensors */
   function fmtTemp(c, units) {
@@ -161,6 +167,9 @@
     not_detected: "The module did not answer on the I2C bus. Check its cable.",
     distance_timeout: "Nothing in range of the Distance sensor.",
     no_sample_yet: "Waiting for the first reading.",
+    no_location_set: "Choose a forecast location in Settings, Calendar & Weather.",
+    fetching: "Getting the forecast…",
+    malformed_forecast: "The weather service sent an unexpected reply; retrying.",
     distance_bus_error: "The Distance sensor stopped answering mid-read. Retrying automatically.",
     i2c_bus_stalled: "Something is holding the sensor bus. Readings pause and resume on their own.",
   };
@@ -172,6 +181,7 @@
     // Gateway module codes: thermo_not_found, light_disconnected, pixels_not_found ...
     if (/_not_found$/.test(item.reason)) return "Not detected on the I2C bus. Check its cable and connector.";
     if (/_disconnected$/.test(item.reason)) return "Stopped answering on the I2C bus. Check its cable.";
+    if (/^network_error/.test(item.reason)) return "Could not reach the weather service; showing the last forecast while it lasts.";
     return cap(item.reason);
   }
 
@@ -292,7 +302,7 @@
   }
 
   return {
-    humanize, cap, fmt12, greeting, skyPhase, duration, until, WEATHER, weatherVisual, fmtTemp,
+    humanize, cap, fmt12, greeting, skyPhase, duration, until, WEATHER, weatherVisual, isNightHour, fmtTemp,
     sampleView, comfortView, proximityView, modeBadge, componentName, healthVisual, healthHint,
     isProblem, CATEGORY, CATEGORY_ICON, ORIGIN, noticeHeadline, noticeEventIn, provenance,
     evidenceLine, evidenceFreshness, originSentence, blockedText, otherNotices,

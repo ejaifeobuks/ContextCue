@@ -4,7 +4,8 @@
   python3 services/ui/main.py                      UNO Q: real HardwareGateway
 
 Then open http://127.0.0.1:7000 (on the board: Chromium in kiosk mode).
-Fixture calendar/weather data always runs on a labeled scenario clock.
+The device clock is used unless --scenario-clock is given; fixture calendar
+and weather data then move onto today's date.
 """
 
 from __future__ import annotations
@@ -35,7 +36,9 @@ async def run(args: argparse.Namespace) -> int:
     if args.scenario not in scenarios:
         print(f"Unknown scenario {args.scenario}; choose from {', '.join(scenarios)}", file=sys.stderr)
         return 2
-    clock = ScenarioClock(scenarios[args.scenario].start)
+    # Device clock by default: the fictional calendar and forecast move onto
+    # today's date. --scenario-clock keeps the dated demo times and time jumps.
+    clock = ScenarioClock(scenarios[args.scenario].start) if args.scenario_clock else SystemClock()
     if args.simulated:
         from contextcue_app.dev_gateway import SimulatedGateway
         gateway = SimulatedGateway(monotonic=clock.monotonic, utcnow=SystemClock().now)
@@ -84,6 +87,9 @@ def main() -> None:
     parser.add_argument("--simulated", action="store_true",
                         help="Use the labeled simulated gateway instead of real hardware")
     parser.add_argument("--scenario", default="morning", help="Fixture scenario to start with")
+    parser.add_argument("--scenario-clock", action="store_true",
+                        help="Run on the labeled scenario clock (dated demo times, time jumps) "
+                             "instead of the device clock")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=7000)
     parser.add_argument("--db", default=str(Path.home() / ".contextcue" / "contextcue.db"),

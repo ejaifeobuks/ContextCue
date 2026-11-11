@@ -25,7 +25,7 @@ from .recommendation import (SUPPORTED_QUESTIONS, GenerationResult, ModelBackend
                              RecommendationService, factual_fallback)
 from .repository import DataRepository
 from .settings import Settings
-from .sources import Scenario, load_scenarios, make_calendar_adapter, make_weather_adapter
+from .sources import Scenario, demo_shift, load_scenarios, make_calendar_adapter, make_weather_adapter
 
 log = logging.getLogger("contextcue.app")
 
@@ -71,8 +71,14 @@ class ContextCueApp:
         self._pending: dict[str, tuple[str, TriggerSpec]] = {}  # request -> notice, spec
         self._specs: dict[str, TriggerSpec] = {}  # notice -> spec
         self._counter = itertools.count(1)
-        self._calendar = make_calendar_adapter(self.settings.calendar_source, self.scenario)
-        self._weather = make_weather_adapter(self.settings.weather_source, self.scenario)
+
+        # On the device clock the chosen scenario is replayed from now (its
+        # start time maps to the current minute); a scenario clock keeps the
+        # dated demo times. The shift is fixed until another scenario is chosen,
+        # so switching a source does not restart the demo.
+        self._replay = not isinstance(clock, ScenarioClock)
+        self._shift = demo_shift(self.scenario, clock.now()) if self._replay else None
+        self._make_sources()
         self._task: asyncio.Task | None = None
         self._last_slow = None
         self._last_save = None
@@ -95,6 +101,12 @@ class ContextCueApp:
                 self.engine.morning_presented.add(key.split(":", 1)[1])
 
     # --------------------------------------------------------------- loop
+    def _make_sources(self) -> None:
+        s = self.settings
+        self._calendar = make_calendar_adapter(s.calendar_source, self.scenario, shift=self._shift)
+        self._weather = make_weather_adapter(s.weather_source, self.scenario, shift=self._shift,
+                                             location=s.location)
+
     def _request_token(self) -> str:
         """Unique per explicit request. A counter alone repeats after a restart
         while acknowledgement tombstones persist, so the first "Brief me"
@@ -407,7 +419,8 @@ class ContextCueApp:
         changes = payload.get("changes")
         if not isinstance(changes, dict):
             raise ActionError("changes must be an object")
-        changes = {k: v for k, v in changes.items() if k not in ("focus", "muted")}
+        # Focus/mute have their own actions; the location only comes from a search result.
+        changes = {k: v for k, v in changes.items() if k not in ("focus", "muted", "location")}
         try:
             updated = self.settings.updated(changes)
         except ValueError as exc:
@@ -416,9 +429,33 @@ class ContextCueApp:
                            or updated.weather_source != self.settings.weather_source)
         self._save_settings(updated)
         if sources_changed:
-            self._calendar = make_calendar_adapter(updated.calendar_source, self.scenario)
-            self._weather = make_weather_adapter(updated.weather_source, self.scenario)
+            self._make_sources()
         return {"status": "saved"}
+
+    async def _act_location_search(self, payload):
+        from .weather import search_locations
+        query = payload.get("query")
+        if not isinstance(query, str) or not 2 <= len(query.strip()) <= 80:
+            raise ActionError("Type at least 2 characters to search")
+        try:
+            places = await asyncio.to_thread(search_locations, query)
+        except Exception as exc:  # network, HTTP, malformed reply
+            raise ActionError(f"Location search failed ({type(exc).__name__}); check the network") from exc
+        return {"status": "ok", "results": places}
+
+    def _act_set_location(self, payload):
+        """Save a place from a search result; the time zone follows it."""
+        place = payload.get("location")
+        changes = {"location": place}
+        if isinstance(place, dict) and place.get("time_zone"):
+            changes["time_zone"] = place["time_zone"]
+        try:
+            updated = self.settings.updated(changes)
+        except ValueError as exc:
+            raise ActionError(str(exc)) from exc
+        self._save_settings(updated)
+        self._make_sources()
+        return {"status": "saved", "location": updated.location}
 
     def _act_clear_data(self, payload):
         self.repo.clear_data(keep_settings=True)
@@ -440,11 +477,13 @@ class ContextCueApp:
         scenario = self.scenarios.get(payload.get("scenario_id"))
         if scenario is None:
             raise ActionError("Unknown scenario")
-        clock = self._require_scenario_clock()
         self.scenario = scenario
-        clock.reset(scenario.start)
-        self._calendar = make_calendar_adapter(self.settings.calendar_source, scenario)
-        self._weather = make_weather_adapter(self.settings.weather_source, scenario)
+        if isinstance(self.clock, ScenarioClock):
+            self.clock.reset(scenario.start)
+        # On the device clock the scenario's data is replayed from now.
+        if self._replay:
+            self._shift = demo_shift(scenario, self.clock.now())
+        self._make_sources()
         for notice in self.notifications.notices.values():
             if not notice.terminal:
                 self.notifications._end(notice, Lifecycle.EXPIRED, "scenario_changed")

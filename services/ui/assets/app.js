@@ -18,6 +18,8 @@ const state = {
   data: null, tab: "glance", section: "general",
   whyOpen: null, whyDetails: false, sheet: null, dialog: null,
   demo: loadDemo(), diagOpen: false, techOpen: false,
+  // Forecast location search (Settings > Calendar & Weather).
+  locQuery: "", locResults: null, locBusy: false, locError: "", locKeyboard: false,
   dragging: false, lastTouch: 0, layout: null,
 };
 
@@ -323,7 +325,15 @@ function comfortCard(d) {
 
 function weatherCard(d) {
   const f = d.forecast;
-  const w = L.weatherVisual(f);
+  // Local hour at the middle of the forecast period decides day or night wording.
+  let hour = NaN;
+  if (f && f.start && f.end) {
+    try {
+      const mid = new Date((Date.parse(f.start) + Date.parse(f.end)) / 2);
+      hour = Number(mid.toLocaleTimeString("en-US", { hour: "numeric", hourCycle: "h23", timeZone: zone() }));
+    } catch (e) { /* unknown zone: day wording */ }
+  }
+  const w = L.weatherVisual(f, L.isNightHour(hour));
   const head = `<div class="card-h">${icon("cloud")}<h3>Weather</h3>${f ? modePill(f.source_mode) : ""}</div>`;
   if (!w.known) {
     return head + `<div class="wx unknown">${icon(w.icon, "wx-ic muted")}<div class="state-msg">${esc(w.text)}</div></div>
@@ -333,7 +343,8 @@ function weatherCard(d) {
   return head + `<div class="wx"><div><div class="big">${temp ? esc(temp) : "—"}</div>
       <div class="sub">${esc(w.text)}${f.precipitation_probability != null ? ` · ${f.precipitation_probability}% chance of rain` : ""}</div></div>
       ${icon(w.icon, "wx-ic")}</div>
-    <div class="meta">${icon("map-pin", "inline")}${esc(f.location || "Location unknown")}<span class="dot">·</span>${esc(clockOf(f.start))}–${esc(clockOf(f.end))}</div>`;
+    <div class="meta">${icon("map-pin", "inline")}${esc(f.location || "Location unknown")}<span class="dot">·</span>${esc(clockOf(f.start))}–${esc(clockOf(f.end))}${
+      /Open-Meteo/.test(f.label || "") ? '<span class="dot">·</span>Data: Open-Meteo.com' : ""}</div>`;
 }
 
 function sensorsCard(d) {
@@ -394,6 +405,9 @@ function renderSettings(d) {
   const fn = { general: secGeneral, sources: secSources, sound: secSound, focus: secFocus, status: secStatus, developer: secDeveloper }[state.section];
   const title = SECTIONS.find((s) => s[0] === state.section);
   put($("#settings-pane"), `<div class="pane-h">${icon(title[2])}<h2>${esc(title[1])}</h2></div>` + fn(d));
+  // The query lives in view state; keep the box in step without stealing focus.
+  const box = $("#loc-q");
+  if (box && document.activeElement !== box && box.value !== state.locQuery) box.value = state.locQuery;
 }
 
 function secGeneral(d) {
@@ -409,16 +423,49 @@ function secSources(d) {
   const s = d.settings, sc = d.schedule, f = d.forecast;
   const sourceState = (x) => !x ? pill("muted", "Not configured") : x.quality === "valid" ? pill("ok", "Working", "circle-check")
     : pill(x.quality === "stale" ? "warn" : "bad", x.quality === "stale" ? "Out of date" : "Unavailable");
-  const fixtureLoc = s.weather_source === "fixture";
+  const loc = s.location;
+  const live = s.weather_source === "open_meteo";
   return group("Calendar", `
     ${field("Calendar source", s.calendar_source === "fixture" ? "Fictional demo calendar" : "Live calendar adapter not connected yet", seg("calendar_source", s.calendar_source, [["fixture", "Demo"], ["google", "Google"], ["microsoft365", "Microsoft 365"]]))}
     ${field("Status", sc ? esc(sc.label) : "", sourceState(sc))}`, "calendar")
     + group("Weather", `
-    ${field("Weather source", s.weather_source === "fixture" ? "Fictional demo forecast" : "Live weather adapter not connected yet", seg("weather_source", s.weather_source, [["fixture", "Demo"], ["open_meteo", "Open-Meteo"]]))}
-    ${field("Status", f ? esc(f.label) : "", sourceState(f))}`, "cloud")
+    ${field("Weather source", !live ? "Fictional demo forecast" : loc ? "Live forecast from Open-Meteo.com, refreshed every 30 minutes"
+      : "Live forecast from Open-Meteo.com: choose a location below", seg("weather_source", s.weather_source, [["fixture", "Demo"], ["open_meteo", "Live (Open-Meteo)"]]))}
+    ${field("Status", f ? esc(f.label) + (f.error ? " · " + esc(L.healthHint({ reason: f.error })) : "") : "", sourceState(f))}`, "cloud")
     + group("Forecast location", `
-    ${field("Location", fixtureLoc ? "Fixture city: part of the demo forecast" : "Supplied by the weather source", `<strong>${esc(f && f.location ? f.location : "Unavailable")}</strong>`)}
-    ${field("Change location", "Needs a location-capable weather service, which is not built yet. ContextCue never guesses your location.", `<button class="btn" disabled>${icon("map-pin")}Change</button>`)}`, "map-pin");
+    ${field("Location", loc ? `Chosen by you · time zone ${esc(loc.time_zone)}` : "Not set. ContextCue never guesses your location.",
+      `<strong>${esc(loc ? [loc.name, loc.region, loc.country].filter(Boolean).join(", ") : "None")}</strong>`)}
+    ${locationSearch()}`, "map-pin");
+}
+
+const KEY_ROWS = ["QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM-'.,"];
+function locationSearch() {
+  const results = state.locResults;
+  const list = state.locBusy ? '<p class="note">Searching…</p>'
+    : state.locError ? `<p class="note bad-text">${esc(state.locError)}</p>`
+    : results == null ? ""
+    : results.length ? `<div class="loc-results">${results.map((r, i) => `<button class="btn loc-result" data-loc-index="${i}">${icon("map-pin")}<span>${esc([r.name, r.region, r.country].filter(Boolean).join(", "))}</span><small>${esc(r.time_zone)}</small></button>`).join("")}</div>`
+    : '<p class="note">No places found. Check the spelling.</p>';
+  const keyboard = state.locKeyboard ? `<div class="osk">
+      ${KEY_ROWS.map((row) => `<div class="osk-row">${[...row].map((k) => `<button class="osk-key" data-key="${k}">${k}</button>`).join("")}</div>`).join("")}
+      <div class="osk-row"><button class="osk-key wide" data-key="space">Space</button><button class="osk-key" data-key="back" aria-label="Delete">⌫</button><button class="osk-key" data-key="clear">Clear</button><button class="osk-key go" data-action="loc-search">Search</button></div>
+    </div>` : "";
+  return `<div class="field col"><div class="name">Find a city<small>Type a city name, search, then tap the right place.</small></div>
+    <div class="loc-search"><input id="loc-q" type="text" autocomplete="off" spellcheck="false" placeholder="Tap to type a city" aria-label="City name" value="${esc(state.locQuery)}">
+      <button class="btn" data-action="loc-kb-toggle" aria-pressed="${state.locKeyboard}">${state.locKeyboard ? "Hide keys" : "Keyboard"}</button>
+      <button class="btn primary" data-action="loc-search">${icon("map-pin")}Search</button></div>
+    ${keyboard}${list}</div>`;
+}
+
+async function searchLocation() {
+  const query = state.locQuery.trim();
+  if (query.length < 2) { toast("Type at least 2 letters", true); return; }
+  state.locBusy = true; state.locError = ""; state.locResults = null; render();
+  const res = await act("location_search", { query }, true);
+  state.locBusy = false;
+  if (res) state.locResults = res.results;
+  else state.locError = "Search failed. Check the board's network connection.";
+  render();
 }
 
 function secSound(d) {
@@ -480,7 +527,8 @@ function secDeveloper(d) {
   const scen = sim.scenarios.map((x) => `<button class="scen ${x.scenario_id === sim.scenario_id ? "on" : ""}" aria-pressed="${x.scenario_id === sim.scenario_id}" data-set="scenario" data-value='${esc(JSON.stringify(x.scenario_id))}'><strong>${esc(x.title)}</strong></button>`).join("");
   html += group("Scenario testing", `
     ${field("Sensor source", "Chosen when the app starts (<code>--simulated</code>). Restart the app to change it.", simSensors ? pill("sim", "Simulated gateway", "flask-conical") : pill("real", "Real UNO Q sensors", "cpu"))}
-    <div class="field col"><div class="name">Calendar and weather scenario<small>${esc(sim.scenario_description)}</small></div><div class="scens">${scen}</div></div>
+    <div class="field col"><div class="name">Calendar and weather scenario<small>${sim.time_controls ? esc(sim.scenario_description)
+      : "On the device clock the chosen scenario's fictional calendar and forecast replay from now, so its events are always ahead. Tap a scenario again to restart it."}</small></div><div class="scens">${scen}</div></div>
     ${sim.time_controls ? field("Scenario clock", `Now ${esc(L.fmt12(d.clock.local_time))} (simulated)`, `<span class="btns"><button class="btn" data-advance="60">+1 min</button><button class="btn" data-advance="600">+10 min</button><button class="btn" data-advance="3600">+1 hour</button></span>`) : ""}
     <div class="combo ${simSensors ? "sim" : "real"}">${icon("circle-check")}<span>${esc(combo)}</span></div>`, "flask-conical");
 
@@ -604,6 +652,27 @@ document.addEventListener("click", async (ev) => {
   if (t.dataset.advance) return act("sim_advance", { seconds: Number(t.dataset.advance) });
   if (t.dataset.fault) return act("sim_fault", { target: t.dataset.fault, active: t.dataset.active === "true" });
   if (t.dataset.sensorSet) return act("sim_sensor", { metric: t.dataset.sensorSet, value: Number(t.dataset.value) });
+  if (t.dataset.key) {
+    const k = t.dataset.key;
+    state.locQuery = k === "back" ? state.locQuery.slice(0, -1) : k === "clear" ? ""
+      : k === "space" ? state.locQuery + " "
+      : state.locQuery + (/(^|[\s-])$/.test(state.locQuery) ? k : k.toLowerCase());  // "Winston-Salem"
+    if (state.locQuery.length > 60) state.locQuery = state.locQuery.slice(0, 60);
+    const box = $("#loc-q");
+    if (box) box.value = state.locQuery;
+    if (state.locQuery.length >= 3) scheduleLocSearch();  // results appear as you type
+    return;
+  }
+  if (t.dataset.locIndex) {
+    const place = (state.locResults || [])[Number(t.dataset.locIndex)];
+    if (!place) return;
+    const res = await act("set_location", { location: place }, true);
+    if (res) {
+      toast(`Forecast location: ${place.name}`);
+      state.locResults = null; state.locQuery = ""; state.locKeyboard = false;
+    }
+    return render();
+  }
   switch (t.dataset.action) {
     case "toggle-focus": return act("focus", { enabled: !d.status.focus });
     case "toggle-mute": return act("mute", { muted: !d.status.muted });
@@ -624,6 +693,8 @@ document.addEventListener("click", async (ev) => {
     case "demo-toggle": state.demo = !state.demo; saveDemo(state.demo); toast(state.demo ? "Demo Mode on: sensor panel shown on Glance" : "Demo Mode off"); return render();
     case "diag-toggle": state.diagOpen = !state.diagOpen; return render();
     case "tech-toggle": state.techOpen = !state.techOpen; return render();
+    case "loc-kb-toggle": state.locKeyboard = !state.locKeyboard; return render();
+    case "loc-search": return searchLocation();
   }
 });
 
@@ -649,7 +720,21 @@ function readUrlState() {
 
 document.addEventListener("pointerdown", (ev) => { if (ev.target.type === "range") state.dragging = true; });
 document.addEventListener("pointerup", () => { state.dragging = false; });
+document.addEventListener("keydown", (ev) => {
+  if (ev.target.id === "loc-q" && ev.key === "Enter") searchLocation();
+});
+// Tapping the city field opens the on-screen keyboard: the kiosk has no
+// physical keyboard and Chromium shows no system one.
+document.addEventListener("focusin", (ev) => {
+  if (ev.target.id === "loc-q" && !state.locKeyboard) { state.locKeyboard = true; render(); }
+});
+let locTimer = null;
+function scheduleLocSearch() {
+  clearTimeout(locTimer);
+  locTimer = setTimeout(() => { if (state.locQuery.trim().length >= 3) searchLocation(); }, 700);
+}
 document.addEventListener("input", (ev) => {
+  if (ev.target.id === "loc-q") state.locQuery = ev.target.value.slice(0, 60);
   if (ev.target.id === "volume") $("#vol-val").textContent = `${ev.target.value}%`;
   if (ev.target.dataset.sensor) {
     const u = { temperature: "°C", humidity: "%RH", ambient_light: "lux", distance: "mm" };

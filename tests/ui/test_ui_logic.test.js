@@ -28,6 +28,17 @@ test("missing, stale, invalid or unknown weather never shows a sun or rain icon"
   assert.equal(L.weatherVisual({ condition: "sunny", quality: "stale" }).text, "Forecast out of date");
 });
 
+test("clear sky at night reads Clear with a moon, never a sun", () => {
+  const clear = { condition: "sunny", quality: "valid" };
+  assert.deepEqual(L.weatherVisual(clear, true), { icon: "moon", text: "Clear", known: true });
+  assert.equal(L.weatherVisual(clear, false).icon, "sun");
+  assert.equal(L.weatherVisual({ condition: "rainy", quality: "valid" }, true).icon, "cloud-rain");
+  assert.equal(L.isNightHour(19), true);
+  assert.equal(L.isNightHour(5), true);
+  assert.equal(L.isNightHour(12), false);
+  assert.equal(L.isNightHour(NaN), false);
+});
+
 test("12-hour clock formatting", () => {
   assert.equal(L.fmt12("00:05"), "12:05 AM");
   assert.equal(L.fmt12("09:30"), "9:30 AM");

@@ -40,6 +40,9 @@ class Settings:
     light_bright_lux: float = 400.0
     calendar_source: str = "fixture"  # fixture | google | microsoft365
     weather_source: str = "fixture"  # fixture | open_meteo
+    # Forecast location chosen by the user (never inferred): name, region,
+    # country, latitude, longitude, time_zone. None until one is chosen.
+    location: dict | None = None
     audio_endpoint: str | None = None
     focus: bool = False
     muted: bool = False
@@ -97,6 +100,8 @@ class Settings:
             raise ValueError("Unknown calendar source")
         if self.weather_source not in ("fixture", "open_meteo"):
             raise ValueError("Unknown weather source")
+        if self.location is not None:
+            _check_location(self.location)
 
 
 def parse_hhmm(value: str) -> time:
@@ -114,7 +119,31 @@ def in_window(local: time, start: time, end: time) -> bool:
     return local >= start or local < end
 
 
+def _check_location(value: Any) -> dict:
+    if not isinstance(value, dict):
+        raise ValueError("location must be an object")
+    name = value.get("name")
+    if not isinstance(name, str) or not 0 < len(name) <= 80:
+        raise ValueError("location name must be 1-80 characters")
+    for key, low, high in (("latitude", -90, 90), ("longitude", -180, 180)):
+        number = value.get(key)
+        if isinstance(number, bool) or not isinstance(number, (int, float)) or not low <= number <= high:
+            raise ValueError(f"location {key} must be a number in {low}..{high}")
+    try:
+        ZoneInfo(value.get("time_zone"))
+    except (ZoneInfoNotFoundError, ValueError, TypeError) as exc:
+        raise ValueError("location time_zone is not a known time zone") from exc
+    for key in ("region", "country"):
+        if value.get(key) is not None and (not isinstance(value[key], str) or len(value[key]) > 80):
+            raise ValueError(f"location {key} must be text")
+    return {"name": name, "region": value.get("region"), "country": value.get("country"),
+            "latitude": float(value["latitude"]), "longitude": float(value["longitude"]),
+            "time_zone": value["time_zone"]}
+
+
 def _coerce(name: str, value: Any, current: Any) -> Any:
+    if name == "location":
+        return None if value is None else _check_location(value)
     if name in ("brightness_override", "audio_endpoint") and value in (None, "", "auto"):
         return None
     if isinstance(current, bool) or name in ("buzzer_enabled", "away_audio_enabled", "focus_p2_speech", "focus", "muted"):

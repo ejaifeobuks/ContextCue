@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
+from zoneinfo import ZoneInfo
 
 from .clock import iso, parse_iso
 from .contracts import SIMULATED, CalendarEvent, SourceResult, WeatherPeriod
@@ -60,11 +61,44 @@ def load_scenarios(path: Path | None = None) -> dict[str, Scenario]:
     return scenarios
 
 
+_TIME_KEYS = ("start", "end", "observed_at", "valid_until")
+
+
+def _shift(value: Any, delta: timedelta, days: int) -> Any:
+    """Move UTC ISO timestamps by `delta` and local YYYY-MM-DD dates by `days`."""
+    if not isinstance(value, str):
+        return value
+    if len(value) == 10:
+        return (date.fromisoformat(value) + timedelta(days=days)).isoformat()
+    return iso(parse_iso(value) + delta)
+
+
+def shift_fixture(data: Any, delta: timedelta, days: int) -> Any:
+    if not delta and not days:
+        return data
+    if isinstance(data, dict):
+        return {k: (_shift(v, delta, days) if k in _TIME_KEYS else shift_fixture(v, delta, days))
+                for k, v in data.items()}
+    if isinstance(data, list):
+        return [shift_fixture(v, delta, days) for v in data]
+    return data
+
+
+Shift = tuple[timedelta, int]  # (offset for timestamps, whole days for all-day dates)
+
+
 class _FixtureBase:
+    """Fictional fixture source. With `shift` (from `demo_shift`) the scenario
+    is replayed from the moment it was chosen: the scenario's start time maps
+    to "now" on the device clock, so the demo day always has events ahead.
+    Without it the data keeps its dated scenario times (scenario clock)."""
+
     source_mode = SIMULATED
 
-    def __init__(self, data: dict[str, Any]):
-        self.data = data
+    def __init__(self, data: dict[str, Any], shift: Shift | None = None):
+        self.raw = data
+        self.shifted = shift is not None
+        self.data = shift_fixture(data, *shift) if shift else data
         self.source_id = data["source_id"]
         self.failure: str | None = None  # injected by the simulator only
 
@@ -75,6 +109,8 @@ class _FixtureBase:
                                 self.failure, None, received, None, label, ())
         observed = self.data["observed_at"]
         valid_until = self.data["valid_until"]
+        if self.shifted and parse_iso(observed) > now:
+            observed = iso(now)  # replayed from now: "observed" cannot be in the future
         if parse_iso(observed) > now:
             return SourceResult(self.source_id, self.kind, SIMULATED, "invalid",
                                 "observed_in_future", observed, received, valid_until, label, ())
@@ -120,14 +156,25 @@ class UnconnectedLiveAdapter:
                             "live_adapter_not_connected", None, iso(now), None, self.label, ())
 
 
-def make_calendar_adapter(setting: str, scenario: Scenario):
+def demo_shift(scenario: Scenario, now: datetime) -> Shift:
+    """Replay `scenario` from `now`: its start time maps to the current minute.
+    All-day dates move by the matching number of local days."""
+    zone = ZoneInfo(scenario.time_zone)
+    delta = now.replace(second=0, microsecond=0) - scenario.start
+    days = ((scenario.start + delta).astimezone(zone).date() - scenario.start.astimezone(zone).date()).days
+    return delta, days
+
+
+def make_calendar_adapter(setting: str, scenario: Scenario, *, shift: Shift | None = None):
     if setting == "fixture":
-        return FixtureCalendarAdapter(scenario.calendar)
+        return FixtureCalendarAdapter(scenario.calendar, shift)
     names = {"google": "Google Calendar", "microsoft365": "Microsoft 365 Calendar"}
     return UnconnectedLiveAdapter(f"live-{setting}", "calendar", names.get(setting, setting))
 
 
-def make_weather_adapter(setting: str, scenario: Scenario):
+def make_weather_adapter(setting: str, scenario: Scenario, *, shift: Shift | None = None,
+                         location: dict | None = None):
     if setting == "fixture":
-        return FixtureWeatherAdapter(scenario.weather)
-    return UnconnectedLiveAdapter("live-open-meteo", "weather", "Open-Meteo forecast")
+        return FixtureWeatherAdapter(scenario.weather, shift)
+    from .weather import OpenMeteoWeatherAdapter
+    return OpenMeteoWeatherAdapter(location)

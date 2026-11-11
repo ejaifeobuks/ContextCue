@@ -425,3 +425,21 @@ input[type=range] { width: 240px; height: 44px; accent-color: var(--accent); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
+
+/* Forecast location search with an on-screen keyboard (no system keyboard on the kiosk). */
+.loc-search { display: flex; gap: 8px; margin-top: 8px; }
+.loc-search input { flex: 1; min-width: 0; min-height: var(--touch); padding: 0 14px; border-radius: 12px;
+  border: 1.5px solid var(--line); font: inherit; font-size: 17px; user-select: text; }
+.loc-search input:focus { border-color: var(--accent); outline: none; }
+.osk { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.osk-row { display: flex; gap: 6px; justify-content: center; }
+.osk-key { min-width: 44px; height: 46px; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2);
+  font-size: 17px; font-weight: 650; }
+.osk-key.wide { flex: 0 0 260px; }
+.osk-key.go { flex: 0 0 140px; background: var(--accent); color: var(--on-accent, #fff); border-color: transparent; font-weight: 600; }
+.osk-key:active { background: var(--accent-soft); }
+.loc-results { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.btn.loc-result { justify-content: flex-start; text-align: left; color: var(--ink); font-weight: 650; }
+.btn.loc-result span { flex: 1; }
+.btn.loc-result small { color: var(--muted); font-weight: 500; }
+.bad-text { color: var(--bad); }
