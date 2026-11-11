@@ -103,18 +103,34 @@ app_url() {  # the running app container's UI; App Lab does not publish the port
   echo "http://$address:$UI_PORT"
 }
 
+uptime_s() {  # whole seconds since boot; unaffected by wall-clock changes
+  local up
+  read -r up _ < /proc/uptime
+  echo "${up%.*}"
+}
+
 kiosk() {
   local wait_s=0 url="" deadline prefs
-  if [ "${1:-}" = "--wait" ]; then wait_s="${2:-600}"; fi
+  if [ "${1:-}" = "--wait" ]; then
+    wait_s="${2:-600}"
+    # Started from the desktop autostart entry: keep a log, or a failure at
+    # boot leaves no trace.
+    mkdir -p "$HOME/.cache"
+    exec >>"$HOME/.cache/contextcue-kiosk.log" 2>&1
+    echo "$(date -Is) kiosk: waiting up to ${wait_s}s for the app"
+  fi
   export DISPLAY="${DISPLAY:-:0}"
   # A kiosk must not blank or lock: unlocking needs a keyboard. Do this first,
   # so the screen stays unlocked even if the app never answers.
   xset s off s noblank -dpms 2>/dev/null || true
   pkill -x light-locker 2>/dev/null || true
-  deadline=$((SECONDS + wait_s))
+  # Time the wait on the uptime clock, not $SECONDS: $SECONDS follows the wall
+  # clock, which jumps forward when network time syncs after login (about 50
+  # minutes on 11 November), ending the wait before the app had started.
+  deadline=$(( $(uptime_s) + wait_s ))
   # At boot App Lab starts the app after the desktop is up: wait until it answers.
   until url="$(app_url)" && curl -sf -o /dev/null --max-time 2 "$url/api/state"; do
-    [ "$SECONDS" -lt "$deadline" ] || die "ContextCue is not running (scripts/contextcue-app.sh run)"
+    [ "$(uptime_s)" -lt "$deadline" ] || die "ContextCue is not running (scripts/contextcue-app.sh run)"
     sleep 3
   done
   # Replace an earlier kiosk window. Its profile is only ever closed by killing
