@@ -156,6 +156,20 @@ test("why-this lines are plain language with freshness", () => {
   assert.equal(L.evidenceFreshness({ quality: "valid", current_quality: "no_longer_present" }).text, "No longer current");
 });
 
+test("later-today forecast and unknown evidence read as sentences, never JSON", () => {
+  const later = { evidence_id: "weather.later", metric: "forecast_later", label: "Open-Meteo forecast",
+                  value: { condition: "sunny", precipitation_probability: 35.0, temperature_c: 12, night: true,
+                           start_local: "21:00", end_local: "00:00", period_id: "om-1" },
+                  quality: "valid", source_mode: "real" };
+  const line = L.evidenceLine(later, "metric");
+  assert.equal(line.what, "Later today");
+  assert.equal(line.text, "Clear, 35% chance of rain, 12.0 °C (9:00 PM–12:00 AM)");
+  assert.equal(line.icon, "moon");
+  const odd = L.evidenceLine({ metric: "new_thing", value: { a_b: 1, nested: { x: 1 } } }, "metric");
+  assert.doesNotMatch(odd.text, /[{}"]/);
+  assert.equal(odd.what, "New thing");
+});
+
 test("origin sentence never presents fallback text as AI output", () => {
   assert.match(L.originSentence(notice), /rules/);
   assert.match(L.originSentence(notice), /not set up/);

@@ -245,13 +245,16 @@
     if (e.metric === "event" && v) {
       return { icon: "calendar", what: "Calendar", text: `${v.title} at ${fmt12(v.start_local)}${v.location ? `, ${v.location}` : ""}`, where };
     }
-    if ((e.metric === "forecast_event" || e.metric === "forecast_next") && v) {
-      const w = WEATHER[v.condition];
-      const parts = [w ? w.text : "Unknown conditions"];
-      if (v.precipitation_probability != null) parts.push(`${v.precipitation_probability}% chance of rain`);
+    if (String(e.metric).startsWith("forecast") && v && typeof v === "object") {
+      const w = weatherVisual({ condition: v.condition, quality: "valid" }, !!v.night);
+      const parts = [w.known ? w.text : "Unknown conditions"];
+      if (v.precipitation_probability != null) parts.push(`${Math.round(v.precipitation_probability)}% chance of rain`);
       const t = fmtTemp(v.temperature_c, units);
       if (t) parts.push(t);
-      return { icon: w ? w.icon : "circle-help", what: e.metric === "forecast_event" ? "Forecast for the event" : "Forecast", text: parts.join(", "), where };
+      const what = { forecast_event: "Forecast for the event", forecast_later: "Later today" }[e.metric] || "Forecast";
+      const when = e.metric === "forecast_later" && v.start_local
+        ? ` (${fmt12(v.start_local)}${v.end_local ? `–${fmt12(v.end_local)}` : ""})` : "";
+      return { icon: w.icon, what, text: parts.join(", ") + when, where };
     }
     if (e.metric === "schedule_today" && v) {
       return { icon: "calendar", what: "Today", text: `${v.event_count} events, ${duration(v.busy_ms)} scheduled`, where };
@@ -268,7 +271,11 @@
       const fmt = e.unit === "degC" ? (x) => fmtTemp(x, units) : (x) => `${x} %`;
       return { icon: "sliders-horizontal", what: "Your comfort range", text: `${fmt(v[0])} to ${fmt(v[1])}`, where: "Your settings" };
     }
-    return { icon: "info", what: e.label || cap(e.metric), text: v == null ? "No value" : (typeof v === "object" ? JSON.stringify(v) : `${v}${e.unit ? " " + e.unit : ""}`), where };
+    // Unknown evidence types: plain values only, never raw JSON on screen.
+    const plain = v == null ? "No value" : typeof v !== "object" ? `${v}${e.unit ? " " + e.unit : ""}`
+      : Object.entries(v).filter(([, x]) => x != null && typeof x !== "object").slice(0, 4)
+          .map(([k, x]) => `${humanize(k)}: ${x}`).join(", ") || "Details in the technical view";
+    return { icon: "info", what: cap(e.metric), text: plain, where };
   }
 
   // Freshness of an evidence item when used and now.
