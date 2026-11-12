@@ -63,7 +63,7 @@ class PreparationFlow(AppHarness):
         self.assertEqual(prep.origin, "factual_fallback")
         self.assertEqual(prep.request_outcome, "error")  # no model configured: labeled
         self.assertEqual(prep.source_mode, "simulated")
-        self.assertIn("Design review starts at 10:00", prep.text)
+        self.assertIn("Design review starts at 10:00 AM", prep.text)
         self.assertIn("70%", prep.text)
         await self.step(60, 12)  # 09:50
         self.assertEqual(prep.priority, 2)
@@ -140,7 +140,7 @@ class PreparationFlow(AppHarness):
         self.assertEqual((later.value["start_local"], later.value["precipitation_probability"]), ("09:00", 70))
         self.assertEqual(snap.facts["advice"], ["Bring an umbrella"])
         [notice] = [n for n in self.app.notifications.notices.values() if n.category == "context_answer"]
-        self.assertIn("70% from 09:00", notice.text)  # the fallback says it too
+        self.assertIn("70% from 9:00 AM", notice.text)  # the fallback says it too
         self.assertIn("Bring an umbrella", notice.text)
 
     async def test_acknowledgement_survives_restart(self):

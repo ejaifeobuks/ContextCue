@@ -64,8 +64,9 @@ class ValidationTests(unittest.TestCase):
                                                            "precipitation_probability": 70}))
         morning = model_view(snapshot("morning", ev, {"local_time": "07:45"}))
         [sched] = [e for e in morning["evidence"] if e["id"] == "calendar.schedule"]
-        self.assertEqual(sched["next_event"], {"title": "Stand-up", "start": "09:00"})
-        self.assertEqual(sched["later"], [{"title": "Review", "start": "10:00"}])
+        self.assertEqual(morning["request"], {"category": "briefing"})  # any hour, not "morning"
+        self.assertEqual(sched["next_event"], {"title": "Stand-up", "start": "9:00 AM"})
+        self.assertEqual(sched["later"], [{"title": "Review", "start": "10:00 AM"}])
         self.assertNotIn("local_time", morning.get("facts", {}))  # quoted as an event time on the board
         prep = snapshot("preparation", ev, {"minutes_until_event": 22, "event_in_ms": 1320000})
         view = model_view(prep)
@@ -90,10 +91,32 @@ class ValidationTests(unittest.TestCase):
         self.assertNotIn("events_today", sched)  # never "4 events today" after they all ended
         self.assertEqual(wx["condition"], "clear")
         self.assertNotIn("from", wx)  # the current period's start read as the time of day
+        # Board: "Team stand-up at 9:00 in Huntsville, Alabama".
+        self.assertNotIn("location", wx)
         text = factual_fallback(snapshot("morning", ev, {})).text
         self.assertIn("No more events today", text)
         self.assertIn("clear", text)
         self.assertNotIn("sunny", text)
+
+    def test_times_and_percentages_read_as_on_screen(self):
+        from contextcue_app.recommendation import model_view
+        later = {"condition": "rainy", "precipitation_probability": 35.0, "temperature_c": 12.0,
+                 "start_local": "21:00", "end_local": "00:00"}
+        now = {"condition": "cloudy", "precipitation_probability": 1.0, "temperature_c": 12.4,
+               "start_local": "18:00"}
+        ev = (evidence("weather.now", "forecast_next", now), evidence("weather.later", "forecast_later", later),
+              evidence("calendar.event.b", "event", {"title": "Review", "start_local": "19:30"}))
+        view = {e["id"]: e for e in model_view(snapshot("context_answer", ev, {}, "rain_today"))["evidence"]}
+        self.assertEqual(view["weather.now"]["rain_chance_pct"], 1)  # board: "1.0%"
+        self.assertEqual((view["weather.later"]["from"], view["weather.later"]["until"]), ("9:00 PM", "12:00 AM"))
+        self.assertEqual(view["calendar.event.b"]["start"], "7:30 PM")  # board: "19:00"
+        # The validator accepts the 12-hour hour it was shown, and still checks it.
+        ids = ("weather.later", "calendar.event.b")
+        snap = snapshot("context_answer", ev, {}, "rain_today")
+        ok = response("Review is at 7:30 PM; 35% chance of rain from 9:00 PM.", ids, "context_answer")
+        self.assertIsNone(validate_response(ok, snap))
+        bad = response("Review is at 8:30 PM.", ids, "context_answer")
+        self.assertEqual(validate_response(bad, snap), "unsupported_number:8")
 
     def test_advice_follows_the_evidence(self):
         from contextcue_app.engine import advice

@@ -213,7 +213,7 @@ function heroNotice(n, d) {
       ${modePill(n.source_mode)}
       <span class="grow"></span>${rel}
     </div>
-    <h2 class="headline">${esc(L.noticeHeadline(n))}</h2>
+    <h2 class="headline">${esc(L.noticeHeadline(n, d.clock.local_time))}</h2>
     <p class="body">${esc(n.text || (n.lifecycle === "generating" ? "Preparing…" : "No text yet"))}</p>
     <div class="meta">${meta}</div>
     <div class="actions">

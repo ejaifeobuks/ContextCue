@@ -196,7 +196,7 @@
   function isProblem(item) { return !["ready", "busy"].includes(item.state); }
 
   /* ------------------------------------------------------------- notices */
-  const CATEGORY = { morning: "Morning briefing", preparation: "Get ready", comfort: "Room comfort",
+  const CATEGORY = { morning: "Briefing", preparation: "Get ready", comfort: "Room comfort",
                      context_answer: "Answer" };
   const CATEGORY_ICON = { morning: "sunrise", preparation: "calendar-clock", comfort: "thermometer",
                           context_answer: "lightbulb" };
@@ -207,11 +207,21 @@
     return (notice.evidence_detail || []).find((e) => e.metric === "event" && e.value && e.value.title);
   }
 
+  // A briefing can be asked for at any hour: name it after the time it is shown.
+  function briefingName(hhmm) {
+    const h = Number(String(hhmm ?? "").split(":")[0]);
+    if (!Number.isFinite(h) || String(hhmm ?? "") === "") return "Your briefing";
+    if (h >= 5 && h < 12) return "Your morning briefing";
+    if (h >= 12 && h < 17) return "Your afternoon briefing";
+    return "Your evening briefing";
+  }
+
   // Headline built only from evidence fields; otherwise a category label.
-  function noticeHeadline(notice) {
+  // `hhmm` is the local time now (briefings live for minutes, not hours).
+  function noticeHeadline(notice, hhmm) {
     const ev = eventEvidence(notice);
     if (ev && notice.category === "preparation") return `${ev.value.title} at ${fmt12(ev.value.start_local)}`;
-    if (notice.category === "morning") return "Your morning briefing";
+    if (notice.category === "morning") return briefingName(hhmm);
     if (notice.category === "comfort") return "Room comfort";
     if (notice.category === "context_answer") return "Your answer";
     return CATEGORY[notice.category] || cap(notice.category);

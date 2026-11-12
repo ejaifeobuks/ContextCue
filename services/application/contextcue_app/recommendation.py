@@ -36,7 +36,7 @@ MAX_CHARS = 400
 # 45 s leaves headroom for sensing and the UI; a later reply is discarded and
 # the notice shows the labeled factual fallback.
 GENERATION_TIMEOUT_S = 45.0
-PROMPT_VERSION = "contextcue-prompt-2"
+PROMPT_VERSION = "contextcue-prompt-3"
 
 SUPPORTED_QUESTIONS = {
     "next_event": "What is my next event?",
@@ -73,12 +73,28 @@ Use ONLY the facts in the snapshot JSON. Never invent times, numbers, names, pla
 Do not do arithmetic: quote numbers exactly as they appear in the snapshot.
 Reply with exactly one JSON object and nothing else: {"text": "<at most 2 short sentences>"}
 Write like a helpful friend, not a report. Never state the current time. If facts.advice is present, include that advice in your own words.
+Write times exactly as given, like 9:00 AM. Write rain chances as whole percentages.
 forecast_next is the weather now; forecast_later is later today, from its "from" time.
 If no_more_events_today is true, say there is nothing else on the calendar today.
-morning: name next_event with its start time, then the weather, including rain later today.
+briefing: name next_event with its start time, then the weather, including rain later today.
 preparation: name the event and its start time; use facts.minutes_until_event if present; mention rain only if rain_chance_pct is 50 or more.
 comfort: give the reading and the preferred range.
 context_answer: answer request.question in one or two sentences."""
+
+
+def clock12(hhmm) -> str | None:
+    """ "19:00" -> "7:00 PM", as the screen shows it. The 0.8B model copied
+    24-hour times into otherwise friendly sentences. Other values pass through."""
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", str(hhmm or ""))
+    if not match:
+        return hhmm
+    hour = int(match[1])
+    return f"{(hour + 11) % 12 + 1}:{match[2]} {'AM' if hour < 12 else 'PM'}"
+
+
+def _pct(value):
+    """Whole percent: the model wrote "1.0%" when given 1.0."""
+    return round(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else value
 
 
 def sky(period: dict) -> str | None:
@@ -100,7 +116,7 @@ def _compact(event) -> dict:
     v, metric = event.value, event.metric
     if metric == "schedule_today" and isinstance(v, dict):
         def brief(e):
-            return _drop_empty({"title": e.get("title"), "start": e.get("start_local"),
+            return _drop_empty({"title": e.get("title"), "start": clock12(e.get("start_local")),
                                 "location": e.get("location")}) if e else None
         nxt = v.get("next_event")
         current = v.get("current_events") or []
@@ -114,17 +130,19 @@ def _compact(event) -> dict:
                             "now": [e.get("title") for e in current],
                             "next_event": brief(nxt), "later": later, "all_day": v.get("all_day")})
     if metric == "event" and isinstance(v, dict):
-        return _drop_empty({"title": v.get("title"), "start": v.get("start_local"),
+        return _drop_empty({"title": v.get("title"), "start": clock12(v.get("start_local")),
                             "location": v.get("location")})
     if metric.startswith("forecast") and isinstance(v, dict):
         # Only the later-today period gets times: the 0.8B model read the
         # current period's start ("from": "21:00") as the time of day.
+        # No place name: next to an event the model wrote "Team stand-up at
+        # 9:00 in Huntsville, Alabama". The screen already shows the place.
         later = metric == "forecast_later"
-        return _drop_empty({"from": v.get("start_local") if later else None,
-                            "until": v.get("end_local") if later else None,
+        return _drop_empty({"from": clock12(v.get("start_local")) if later else None,
+                            "until": clock12(v.get("end_local")) if later else None,
                             "condition": sky(v),
-                            "rain_chance_pct": v.get("precipitation_probability"),
-                            "temperature_c": v.get("temperature_c"), "location": v.get("location")})
+                            "rain_chance_pct": _pct(v.get("precipitation_probability")),
+                            "temperature_c": v.get("temperature_c")})
     if metric.startswith("preferred_") and isinstance(v, (list, tuple)) and len(v) == 2:
         return {"low": v[0], "high": v[1], "unit": event.unit}
     if metric.startswith("comfort_"):
@@ -152,7 +170,9 @@ def _model_evidence(snapshot: ContextSnapshot) -> list:
 def model_view(snapshot: ContextSnapshot) -> dict:
     """The compact snapshot a model reads: request, code-calculated facts and
     evidence with the same IDs the reply must cite."""
-    request = {"category": snapshot.category}
+    # "briefing", not "morning": the user can ask for one at any hour, and the
+    # model greeted "Good morning" in the evening.
+    request = {"category": "briefing" if snapshot.category == MORNING else snapshot.category}
     if snapshot.question:
         request["question"] = SUPPORTED_QUESTIONS.get(snapshot.question, snapshot.question)
     facts = {k: v for k, v in snapshot.facts.items() if k not in _HIDDEN_FACTS}
@@ -293,6 +313,9 @@ def _allowed_numbers(snapshot: ContextSnapshot, referenced: set[str]) -> set[str
             for match in _NUMBER.findall(value):
                 allowed.add(match.lstrip("0") or "0")
                 allowed.add(match)
+            # "19:00" may be written "7:00 PM" (the model view shows 12-hour time).
+            for hour in re.findall(r"\b(\d{1,2}):\d{2}\b", value):
+                allowed.add(str((int(hour) + 11) % 12 + 1))
         elif isinstance(value, dict):
             for item in value.values():
                 add(item)
@@ -384,7 +407,7 @@ def factual_fallback(snapshot: ContextSnapshot) -> ModelResponse | None:
             line = f"{demo}{left} more {'event' if left == 1 else 'events'} today"
         if s.get("next_event"):
             n = s["next_event"]
-            line += f"; next is {n['title']} at {n['start_local']}"
+            line += f"; next is {n['title']} at {clock12(n['start_local'])}"
         parts.append(line + ".")
         ids.append(schedule.evidence_id)
 
@@ -401,7 +424,7 @@ def factual_fallback(snapshot: ContextSnapshot) -> ModelResponse | None:
         if later is not None and (later.value.get("precipitation_probability") or 0) > \
                 (f.get("precipitation_probability") or 0):
             line += (f"; {later.value['precipitation_probability']:.0f}% from "
-                     f"{later.value['start_local']}")
+                     f"{clock12(later.value['start_local'])}")
             ids.append(later.evidence_id)
         tips = facts.get("advice") or []
         parts.append(line + (f". {tips[0]}." if tips else "."))
@@ -427,7 +450,7 @@ def factual_fallback(snapshot: ContextSnapshot) -> ModelResponse | None:
         if event is not None:
             e = event.value
             where = f" in {e['location']}" if e.get("location") else ""
-            parts.append(f"{e['title']} starts at {e['start_local']}{where}.")
+            parts.append(f"{e['title']} starts at {clock12(e['start_local'])}{where}.")
             ids.append(event.evidence_id)
         rain = _evidence(snapshot, "forecast_event")
         if rain is not None and rain.value.get("precipitation_probability") is not None:
@@ -451,7 +474,7 @@ def factual_fallback(snapshot: ContextSnapshot) -> ModelResponse | None:
         if question == "next_event":
             if schedule is not None and schedule.value.get("next_event"):
                 n = schedule.value["next_event"]
-                parts.append(f"Your next event is {n['title']} at {n['start_local']}.")
+                parts.append(f"Your next event is {n['title']} at {clock12(n['start_local'])}.")
                 ids.append(schedule.evidence_id)
             elif schedule is not None:
                 parts.append("No more timed events today.")

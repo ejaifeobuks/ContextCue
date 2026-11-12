@@ -138,6 +138,13 @@ test("notice headline and countdown come from cited evidence", () => {
   assert.equal(L.noticeHeadline(notice), "Design review at 10:00 AM");
   assert.equal(L.noticeEventIn(notice, "2026-11-16T15:38:00.000Z"), 22 * 60000);
   assert.equal(L.noticeHeadline({ category: "comfort", evidence_detail: [] }), "Room comfort");
+  // Board: "Your morning briefing" was shown at 9 PM.
+  const briefing = { category: "morning", evidence_detail: [] };
+  assert.equal(L.noticeHeadline(briefing, "07:45"), "Your morning briefing");
+  assert.equal(L.noticeHeadline(briefing, "14:10"), "Your afternoon briefing");
+  assert.equal(L.noticeHeadline(briefing, "21:05"), "Your evening briefing");
+  assert.equal(L.noticeHeadline(briefing), "Your briefing");
+  assert.equal(L.CATEGORY.morning, "Briefing");
   assert.equal(L.noticeEventIn({ category: "comfort", evidence_detail: [] }, "2026-11-16T15:38:00Z"), null);
 });
 
