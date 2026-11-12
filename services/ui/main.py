@@ -54,9 +54,13 @@ async def run(args: argparse.Namespace) -> int:
         gateway = HardwareGateway(ArduinoBridgeTransport(args.router))
         mode = "hardware"
     model = LlamaCppModel(args.model_url, args.model_name) if args.model_url else None
+    speech = None
+    if args.voice_dir:  # Piper voice, played through the board's sound output
+        from contextcue_app.speech import PiperSpeech
+        speech = PiperSpeech(Path(args.voice_dir))
     repo = DataRepository(args.db)
     app = ContextCueApp(gateway=gateway, clock=clock, repository=repo, gateway_mode=mode,
-                        scenario_id=args.scenario, model=model, scenarios=scenarios)
+                        scenario_id=args.scenario, model=model, scenarios=scenarios, speech=speech)
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -97,6 +101,7 @@ def main() -> None:
     parser.add_argument("--router", help="Override the Arduino Router socket (hardware mode)")
     parser.add_argument("--model-url", help="OpenAI-compatible endpoint, e.g. http://127.0.0.1:9999/v1")
     parser.add_argument("--model-name", help="Model name for the endpoint, if it needs one")
+    parser.add_argument("--voice-dir", help="Speak notices with Piper; voice files are kept here")
     args = parser.parse_args()
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
     try:

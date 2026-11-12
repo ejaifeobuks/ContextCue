@@ -2,3 +2,6 @@ arduino-router-bridge==0.5.1
 # Live calendar (subscription link): recurrence rules, exceptions, time zones.
 icalendar==7.3.0
 recurring-ical-events==3.8.2
+# Spoken notices: Piper text to speech (offline, ARM64 wheels; voice fetched into data/voices).
+piper-tts==1.8.0
+onnxruntime==1.31.1

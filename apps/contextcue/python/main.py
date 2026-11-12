@@ -42,7 +42,9 @@ def main() -> None:
     sys.argv = [str(ENTRY), "--host", "0.0.0.0", "--port", "7000",
                 "--db", str(DATA / "contextcue.db"),
                 # The arduino:llm Brick declared in app.yaml (on-board, CPU).
-                "--model-url", MODEL_URL]
+                "--model-url", MODEL_URL,
+                # Spoken notices (Piper); the voice is downloaded once into data/.
+                "--voice-dir", str(DATA / "voices")]
     model = declared_model(HERE.parent / "app.yaml")
     if model:
         sys.argv += ["--model-name", model]

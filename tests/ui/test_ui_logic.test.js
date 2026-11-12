@@ -110,7 +110,7 @@ test("health states map to icon plus text", () => {
   assert.equal(L.healthVisual("unavailable").text, "Unavailable");
   assert.equal(L.isProblem({ state: "busy" }), false);
   assert.equal(L.isProblem({ state: "unavailable" }), true);
-  assert.equal(L.componentName("speech"), "Bluetooth speaker and speech");
+  assert.equal(L.componentName("speech"), "Speaker and speech");
   assert.equal(L.componentName("new_thing"), "New thing");
   assert.match(L.healthHint({ state: "unavailable", reason: "mcu_unresponsive" }), /microcontroller/);
   assert.equal(L.healthHint({ state: "unavailable", reason: "some_raw_code" }), "Some raw code");

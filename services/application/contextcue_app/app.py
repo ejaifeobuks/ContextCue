@@ -124,11 +124,16 @@ class ContextCueApp:
         warm_up = getattr(self.recommender.backend, "warm_up", None)
         if warm_up is not None:
             self._warm_task = asyncio.get_running_loop().create_task(warm_up())
+        # Same for the speech voice (download once, then load).
+        prepare = getattr(self.notifications.speech, "prepare", None)
+        if prepare is not None:
+            self._voice_task = asyncio.get_running_loop().create_task(prepare())
 
     async def stop(self) -> None:
-        warm = getattr(self, "_warm_task", None)
-        if warm is not None and not warm.done():
-            warm.cancel()
+        for name in ("_warm_task", "_voice_task"):
+            task = getattr(self, name, None)
+            if task is not None and not task.done():
+                task.cancel()
         if self._task:
             self._task.cancel()
             try:
@@ -413,8 +418,9 @@ class ContextCueApp:
 
     def _act_volume(self, payload):
         self._save_settings(self.settings.updated({"speech_volume": payload.get("volume")}))
-        return {"status": "ok", "volume": self.settings.speech_volume,
-                "applied": False, "reason": "speech_volume_saved_no_audio_adapter"}
+        ready = bool(self.notifications.speech.status().get("ready"))
+        return {"status": "ok", "volume": self.settings.speech_volume, "applied": ready,
+                "reason": None if ready else "speech_volume_saved_no_audio_adapter"}
 
     def _act_settings(self, payload):
         changes = payload.get("changes")

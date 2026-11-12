@@ -146,7 +146,7 @@
     bridge: "Arduino Bridge", thermo: "Thermo sensor", light: "Light sensor",
     distance: "Distance sensor", pixels: "Pixels", buzzer: "Buzzer", output_lease: "Output safety lease",
     calendar_source: "Calendar", weather_source: "Weather forecast", model: "AI model",
-    speech: "Bluetooth speaker and speech", storage: "Storage",
+    speech: "Speaker and speech", storage: "Storage",
   };
 
   function componentName(id) { return COMPONENT[id] || cap(id); }
@@ -164,6 +164,8 @@
     router_unavailable: "The Arduino Router service is not running on the board.",
     gateway_stopped: "The hardware connection was stopped.",
     no_tts_engine_selected: "No speech engine is installed yet, so notices are visual only.",
+    voice_loading: "Getting the voice ready (downloaded once, then kept on the board).",
+    voice_unavailable: "The voice could not be loaded, so notices are visual only. Check the internet connection and restart the app.",
     not_detected: "The module did not answer on the I2C bus. Check its cable.",
     distance_timeout: "Nothing in range of the Distance sensor.",
     no_sample_yet: "Waiting for the first reading.",
@@ -318,6 +320,7 @@
     already_announced: "Already announced", buzzer_not_enabled: "The Buzzer chime is off",
     buzzer_unavailable: "The Buzzer is unavailable", away_endpoint_disconnected_queued: "Speaker disconnected; queued",
     long_idle_clear_distance: "Nobody near the desk for a while",
+    voice_loading: "The voice is still loading", voice_unavailable: "The voice could not be loaded",
   };
   function blockedText(reason) { return BLOCKED[reason] || cap(reason || "Not available"); }
 

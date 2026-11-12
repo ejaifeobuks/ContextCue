@@ -77,7 +77,7 @@ function describe(action, body) {
   if (action === "sim_advance") return `Scenario time moved ${L.duration(body.seconds * 1000)} ahead`;
   if (action.startsWith("sim_")) return "Simulation updated";
   if (body.status === "blocked") return `Not played: ${L.blockedText(body.reason)}`;
-  if (action === "volume") return `Volume saved (${body.volume}%). Not applied yet: no speech adapter.`;
+  if (action === "volume") return body.applied ? `Volume ${body.volume}%` : `Volume saved (${body.volume}%). Applied once the voice is ready.`;
   return { acknowledged: "Marked as done", requested: "Request sent", muted: "Sound muted", unmuted: "Sound on",
            focus_on: "Focus on", focus_off: "Focus off", stopped: "Audio stopped", ok: "Saved" }[body.status]
     || L.cap(body.status || "Done");
@@ -501,14 +501,12 @@ function secSound(d) {
   const a = d.audio, s = d.settings;
   return group("Speaker and speech", `
     ${field("Speech engine", "", `<span>${esc(a.engine || "None installed")}</span>`)}
-    ${field("Speaker", "Pair the speaker in the board's Bluetooth settings", `<span>${esc(a.endpoint || "None selected")}</span>`)}
-    ${field("Paired", "", yesNo(a.paired))}
-    ${field("Connected", "", yesNo(a.connected))}
+    ${field("Speaker", "Plug in a USB speaker or pair a Bluetooth one on the board; the board's chosen sound output is used", `<span>${esc(a.endpoint || "None selected")}</span>`)}
     ${field("Ready to play", a.reason ? esc(L.healthHint({ reason: a.reason })) : "", yesNo(a.ready))}
-    <p class="note">Finished playback does not prove anyone heard it.</p>`, "bluetooth")
+    <p class="note">Notices are spoken only when Audio below allows it. Finished playback does not prove anyone heard it.</p>`, "volume-2")
     + group("Sound", `
     ${field("Mute", "Silences speech and the Buzzer; notices stay on screen", actionToggle("toggle-mute", d.status.muted, "Muted", "Off", "Mute"))}
-    ${field("Speech volume", `<span id="vol-val">${a.volume}%</span> · saved, applied once a speech adapter exists`, `<input id="volume" type="range" min="0" max="100" step="5" value="${a.volume}" aria-label="Speech volume">`)}
+    ${field("Speech volume", `<span id="vol-val">${a.volume}%</span>`, `<input id="volume" type="range" min="0" max="100" step="5" value="${a.volume}" aria-label="Speech volume">`)}
     ${field("Audio", "When notices may be spoken", seg("audio_policy", a.policy, [["visual_only", "Visual only"], ["on_request", "On request"], ["automatic", "Automatic"]]))}
     ${field("Buzzer chime", "Separate opt-in; one short tone only", toggle("buzzer_enabled", a.buzzer_enabled, "Buzzer chime"))}
     ${field("Away announcements", "Once, and only to a connected speaker", toggle("away_audio_enabled", s.away_audio_enabled, "Away announcements"))}
