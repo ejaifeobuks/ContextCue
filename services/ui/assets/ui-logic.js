@@ -102,6 +102,8 @@
     if (sample.quality === "valid" && sample.value != null) {
       return { ok: true, text: SAMPLE_FORMAT[metric](sample.value, units), tone: "ok" };
     }
+    // An empty desk: the sensor works, it just has nothing to measure.
+    if (sample.error === "distance_timeout") return { ok: false, text: "Nothing in range", tone: "muted" };
     if (sample.quality === "stale") return { ok: false, text: "Stale", tone: "warn", reason: sample.error };
     if (sample.quality === "disabled") return { ok: false, text: "Disabled", tone: "muted", reason: sample.error };
     return { ok: false, text: "Unavailable", tone: "bad", reason: sample.error };

@@ -74,6 +74,8 @@ test("invalid or missing sensor readings are statuses, never zero", () => {
   assert.equal(L.sampleView("humidity", { value: null, quality: "valid" }).text, "Unavailable");
   assert.equal(L.sampleView("humidity", { value: 40, quality: "stale" }).text, "Stale");
   assert.equal(L.sampleView("humidity", undefined).text, "No data yet");
+  const empty = L.sampleView("distance", { value: null, quality: "unavailable", error: "distance_timeout" });
+  assert.deepEqual([empty.text, empty.tone, empty.reason], ["Nothing in range", "muted", undefined]);
 });
 
 test("comfort wording: backend alerts, out-of-range facts, or comfortable", () => {
