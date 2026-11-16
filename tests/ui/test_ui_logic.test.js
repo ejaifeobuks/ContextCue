@@ -210,3 +210,14 @@ test("an empty-day briefing explains why the AI was not used", () => {
   assert.match(s, /nothing left on today's calendar/);
   assert.doesNotMatch(s, /did not give an accepted reply/);
 });
+
+test("parts of the day follow AM/PM: midnight to noon is morning", () => {
+  for (const [t, part] of [["00:00", "morning"], ["00:23", "morning"], ["04:59", "morning"],
+                           ["11:59", "morning"], ["12:00", "afternoon"], ["16:59", "afternoon"],
+                           ["17:00", "evening"], ["23:59", "evening"]]) {
+    assert.equal(L.greeting(t), `Good ${part}`, t);
+    assert.equal(L.briefingName(t), `Your ${part} briefing`, t);
+  }
+  assert.equal(L.greeting(""), "Hello");
+  assert.equal(L.briefingName(undefined), "Your briefing");
+});

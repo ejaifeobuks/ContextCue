@@ -20,12 +20,19 @@
     return `${((h + 11) % 12) + 1}:${m[2]} ${h < 12 ? "AM" : "PM"}`;
   }
 
+  // Parts of the day, by the AM/PM convention (there is no international
+  // standard): midnight to noon is morning, noon to 5 PM afternoon, the rest
+  // evening. One rule for the greeting and the briefing title.
+  function partOfDay(hhmm) {
+    if (String(hhmm ?? "") === "") return null;
+    const h = Number(String(hhmm).split(":")[0]);
+    if (!Number.isFinite(h) || h < 0 || h > 23) return null;
+    return h < 12 ? "morning" : h < 17 ? "afternoon" : "evening";
+  }
+
   function greeting(hhmm) {
-    const h = Number(String(hhmm ?? "").split(":")[0]);
-    if (!Number.isFinite(h)) return "Hello";
-    if (h >= 5 && h < 12) return "Good morning";
-    if (h >= 12 && h < 17) return "Good afternoon";
-    return "Good evening";
+    const part = partOfDay(hhmm);
+    return part ? `Good ${part}` : "Hello";
   }
 
   // Sky palette for the header scene; "night" also covers quiet late hours.
@@ -213,11 +220,8 @@
 
   // A briefing can be asked for at any hour: name it after the time it is shown.
   function briefingName(hhmm) {
-    const h = Number(String(hhmm ?? "").split(":")[0]);
-    if (!Number.isFinite(h) || String(hhmm ?? "") === "") return "Your briefing";
-    if (h >= 5 && h < 12) return "Your morning briefing";
-    if (h >= 12 && h < 17) return "Your afternoon briefing";
-    return "Your evening briefing";
+    const part = partOfDay(hhmm);
+    return part ? `Your ${part} briefing` : "Your briefing";
   }
 
   // Headline built only from evidence fields; otherwise a category label.
@@ -341,7 +345,7 @@
   }
 
   return {
-    humanize, cap, fmt12, greeting, skyPhase, duration, until, WEATHER, weatherVisual, isNightHour, fmtTemp,
+    humanize, cap, fmt12, greeting, partOfDay, briefingName, skyPhase, duration, until, WEATHER, weatherVisual, isNightHour, fmtTemp,
     sampleView, comfortView, proximityView, modeBadge, componentName, healthVisual, healthHint,
     isProblem, isUrgent, CATEGORY, CATEGORY_ICON, ORIGIN, noticeHeadline, noticeEventIn, provenance,
     evidenceLine, evidenceFreshness, originSentence, blockedText, otherNotices,
