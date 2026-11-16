@@ -138,10 +138,11 @@ class PreparationFlow(AppHarness):
         [snap] = captured
         later = next(e for e in snap.evidence if e.evidence_id == "weather.later")
         self.assertEqual((later.value["start_local"], later.value["precipitation_probability"]), ("09:00", 70))
-        self.assertEqual(snap.facts["advice"], ["Bring an umbrella"])
+        # Rain only from 9:00 AM: advice for later, not "bring one now".
+        self.assertEqual(snap.facts["advice"], ["Take an umbrella if you go out later"])
         [notice] = [n for n in self.app.notifications.notices.values() if n.category == "context_answer"]
         self.assertIn("70% from 9:00 AM", notice.text)  # the fallback says it too
-        self.assertIn("Bring an umbrella", notice.text)
+        self.assertIn("Take an umbrella if you go out later", notice.text)
 
     async def test_acknowledgement_survives_restart(self):
         tmp = support.temp_dir(self)

@@ -31,6 +31,7 @@ from zoneinfo import ZoneInfo
 
 from .clock import iso
 from .contracts import CalendarEvent, SourceResult
+from .schedule import clean_location
 
 REFRESH_S = 10 * 60   # Google's secret link itself lags edits by minutes to hours
 RETRY_S = 2 * 60
@@ -135,13 +136,13 @@ def parse_events(data: bytes, now: datetime, zone: ZoneInfo) -> tuple[CalendarEv
         status = str(component.get("STATUS", "CONFIRMED")).lower()
         uid = str(component.get("UID", "")) or f"{component.get('SUMMARY', '')}"
         title = str(component.get("SUMMARY", "")).strip() or "Busy"
-        location = str(component.get("LOCATION", "")).strip() or None
+        location = clean_location(str(component.get("LOCATION", "")))
         events.append(CalendarEvent(
             # Stable across restarts, so evidence and notice keys do not churn.
             event_id="ics-" + hashlib.sha1(f"{uid}|{start_s}".encode()).hexdigest()[:12],
             title=title[:120], start=start_s, end=end_s, all_day=all_day,
             status=status if status in ("confirmed", "tentative", "cancelled") else "confirmed",
-            location=location[:120] if location else None))
+            location=location))
     events.sort(key=lambda e: (not e.all_day, e.start))
     return tuple(events)
 

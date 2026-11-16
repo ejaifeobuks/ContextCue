@@ -12,7 +12,29 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+import re
+
 from .clock import iso, parse_iso
+
+# A video-call link or service as the location means an online event. The link
+# itself never enters the app: it can carry a personal access token, and it
+# would show on the kiosk screen and be sent to the model.
+ONLINE_LOCATION = "Online"
+_ONLINE = re.compile(r"https?://|\bwww\.|\b(zoom|teams|google meet|meet\.google|webex|skype|"
+                     r"gotomeeting|online|virtual)\b", re.I)
+
+
+def clean_location(raw: str | None) -> str | None:
+    """A calendar LOCATION as ContextCue keeps it: "Online" for a call link or
+    service, otherwise the text (at most 120 characters)."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    return ONLINE_LOCATION if _ONLINE.search(raw) else raw[:120]
+
+
+def is_online(location: str | None) -> bool:
+    return location == ONLINE_LOCATION
 from .contracts import CalendarEvent
 
 IMMINENT_MS = 10 * 60_000

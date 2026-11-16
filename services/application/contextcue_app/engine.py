@@ -20,7 +20,7 @@ from .contracts import (COMFORT, CONTEXT_ANSWER, MORNING, PREPARATION, REAL, Con
                         ContextSnapshot, Notice, SourceResult)
 from .recommendation import GENERATION_TIMEOUT_S, SUPPORTED_QUESTIONS
 from .rules import CONDITION_TEXT, ComfortMonitor, ComfortStatus, ProximityMonitor, ProximityStatus
-from .schedule import ScheduleFacts, calculate_schedule
+from .schedule import ScheduleFacts, calculate_schedule, is_online
 from .settings import Settings, in_window, parse_hhmm
 
 STALE_MS = {"temperature": 5000, "humidity": 5000, "ambient_light": 2000, "distance": 2000}
@@ -284,7 +284,9 @@ class ContextEngine:
             ids = ["calendar.schedule", f"calendar.event.{event.event_id}"]
             wx = self.evidence.get("weather.event")
             rain = None
-            if wx and wx.quality == "valid" and (wx.value.get("precipitation_probability") or 0) >= RAIN_THRESHOLD:
+            # An online event needs no trip, so its weather is not part of getting ready.
+            if wx and wx.quality == "valid" and not is_online(event.location) and \
+                    (wx.value.get("precipitation_probability") or 0) >= RAIN_THRESHOLD:
                 ids.append("weather.event")
                 rain = wx.value["precipitation_probability"]
             specs.append(TriggerSpec(
@@ -412,10 +414,18 @@ def advice(category: str, evidence, condition: str | None = None,
         return [INDOOR_TIPS[condition]] if condition in INDOOR_TIPS else []
     if category == CONTEXT_ANSWER and question != "rain_today":
         return []
-    forecasts = [e.value for e in evidence
-                 if e.metric.startswith("forecast") and e.quality == "valid" and isinstance(e.value, dict)]
+    if category == PREPARATION and any(e.metric == "event" and isinstance(e.value, dict)
+                                       and is_online(e.value.get("location")) for e in evidence):
+        return []  # an online event: no trip, so no outdoor advice
+    valid = [e for e in evidence
+             if e.metric.startswith("forecast") and e.quality == "valid" and isinstance(e.value, dict)]
+    forecasts = [e.value for e in valid]
+    rainy = [e.metric for e in valid if (e.value.get("precipitation_probability") or 0) >= RAIN_THRESHOLD]
     tips = []
-    if any((f.get("precipitation_probability") or 0) >= RAIN_THRESHOLD for f in forecasts):
+    if rainy and set(rainy) == {"forecast_later"}:
+        # Rain only later today: not a reason to take one to an earlier event.
+        tips.append("Take an umbrella if you go out later")
+    elif rainy:
         tips.append("Bring an umbrella")
     if any(f.get("condition") == "snowy" for f in forecasts):
         tips.append("Dress for snow")

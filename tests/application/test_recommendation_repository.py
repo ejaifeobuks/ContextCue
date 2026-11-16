@@ -141,6 +141,34 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(advice("context_answer", (rain,), question="next_event"), [])
         self.assertEqual(advice("context_answer", (rain,), question="rain_today"), ["Bring an umbrella"])
 
+    def test_online_events_and_rain_timing(self):
+        from contextcue_app.engine import advice
+        from contextcue_app.schedule import clean_location
+        # A sign-in link (with a token) never enters the app; it becomes "Online".
+        for raw in ("https://example.invalid/ltrk/eyJhbGciOi.token", "Zoom", "Microsoft Teams Meeting",
+                    "meet.google.com/abc-defg-hij", "Virtual", "www.example.invalid/join"):
+            with self.subTest(raw=raw):
+                self.assertEqual(clean_location(raw), "Online")
+        self.assertEqual(clean_location("Room 4"), "Room 4")
+        self.assertIsNone(clean_location("  "))
+        online = evidence("calendar.event.b", "event", {"title": "Bloomberg 101", "start_local": "12:30",
+                                                        "location": "Online"})
+        in_person = evidence("calendar.event.d", "event", {"title": "Dentist", "start_local": "15:30",
+                                                           "location": "High Street"})
+        rain_at_event = evidence("weather.event", "forecast_event",
+                                 {"condition": "rainy", "precipitation_probability": 80, "temperature_c": 3})
+        self.assertEqual(advice("preparation", (online, rain_at_event)), [])
+        self.assertEqual(advice("preparation", (in_person, rain_at_event)), ["Bring an umbrella", "Wear a warm coat"])
+        # Board, 16 November: 0% now, 55% from 6 PM; the briefing said "bring an umbrella".
+        dry_now = evidence("weather.now", "forecast_next", {"condition": "cloudy", "precipitation_probability": 0,
+                                                            "temperature_c": 14})
+        wet_later = evidence("weather.later", "forecast_later", {"condition": "cloudy",
+                             "precipitation_probability": 55, "temperature_c": 13, "start_local": "18:00"})
+        self.assertEqual(advice("morning", (dry_now, wet_later)), ["Take an umbrella if you go out later"])
+        wet_now = evidence("weather.now", "forecast_next", {"condition": "rainy", "precipitation_probability": 70,
+                                                            "temperature_c": 14})
+        self.assertEqual(advice("morning", (wet_now, wet_later)), ["Bring an umbrella"])
+
     def test_rejections(self):
         snap = snapshot()
         cases = {
