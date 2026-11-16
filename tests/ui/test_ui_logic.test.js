@@ -196,3 +196,17 @@ test("other notices exclude the selected and finished ones", () => {
                 { notice_id: "c", lifecycle: "acknowledged" }, { notice_id: "d", lifecycle: "expired" }];
   assert.deepEqual(L.otherNotices(list, "a").map((n) => n.notice_id), ["b"]);
 });
+
+test("only a meeting about to start is urgent", () => {
+  assert.equal(L.isUrgent({ priority: 2, category: "preparation" }), true);
+  assert.equal(L.isUrgent({ priority: 1, category: "preparation" }), false);
+  assert.equal(L.isUrgent({ priority: 2, category: "morning" }), false);  // a briefing you asked for
+  assert.equal(L.isUrgent({ priority: 2, category: "context_answer" }), false);
+  assert.equal(L.isUrgent(null), false);
+});
+
+test("an empty-day briefing explains why the AI was not used", () => {
+  const s = L.originSentence({ origin: "factual_fallback", generation: { reason: "factual_only:no_events_left" } });
+  assert.match(s, /nothing left on today's calendar/);
+  assert.doesNotMatch(s, /did not give an accepted reply/);
+});

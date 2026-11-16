@@ -30,7 +30,9 @@ RAIN_THRESHOLD = 50.0
 QUESTION_EVIDENCE = {
     "next_event": ["calendar.schedule"],
     "rain_today": ["weather.now", "weather.later"],
-    "room_comfort": ["sensor.temperature", "sensor.humidity"],
+    # With the preferred ranges, "comfortable" can be judged (and checked).
+    "room_comfort": ["sensor.temperature", "sensor.humidity", "pref.temperature_range",
+                     "pref.humidity_range"],
     "schedule_today": ["calendar.schedule"],
 }
 

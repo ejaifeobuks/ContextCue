@@ -302,11 +302,20 @@
   }
 
   // How the notice text was produced, in plain words.
+  // "Urgent" is for a meeting about to start (within 10 minutes). Briefings
+  // and answers you asked for also come first (priority 2), but are not urgent.
+  function isUrgent(notice) {
+    return !!notice && notice.priority >= 2 && notice.category === "preparation";
+  }
+
   function originSentence(notice) {
     const g = notice.generation || {};
     if (notice.origin === "generated") {
       const where = g.execution_location && g.execution_location !== "none" ? ` on ${humanize(g.execution_location)}` : "";
       return `Written by the AI model${g.model ? ` (${g.model})` : ""}${where}. Its numbers were checked against the facts above.`;
+    }
+    if (notice.origin === "factual_fallback" && String(g.reason || "").startsWith("factual_only")) {
+      return "Written by ContextCue's rules from the facts above: with nothing left on today's calendar, the plain facts are clearer than AI wording.";
     }
     if (notice.origin === "factual_fallback") {
       return `Written by ContextCue's rules from the facts above, because the AI model ${g.reason === "model_not_configured" ? "is not set up" : "did not give an accepted reply"}${g.reason && g.reason !== "model_not_configured" ? ` (${humanize(g.reason)})` : ""}.`;
@@ -334,7 +343,7 @@
   return {
     humanize, cap, fmt12, greeting, skyPhase, duration, until, WEATHER, weatherVisual, isNightHour, fmtTemp,
     sampleView, comfortView, proximityView, modeBadge, componentName, healthVisual, healthHint,
-    isProblem, CATEGORY, CATEGORY_ICON, ORIGIN, noticeHeadline, noticeEventIn, provenance,
+    isProblem, isUrgent, CATEGORY, CATEGORY_ICON, ORIGIN, noticeHeadline, noticeEventIn, provenance,
     evidenceLine, evidenceFreshness, originSentence, blockedText, otherNotices,
   };
 });

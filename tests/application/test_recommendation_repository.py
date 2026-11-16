@@ -121,7 +121,7 @@ class ValidationTests(unittest.TestCase):
         ok = response("Review is at 7:30 PM; 35% chance of rain from 9:00 PM.", ids, "context_answer")
         self.assertIsNone(validate_response(ok, snap))
         bad = response("Review is at 8:30 PM.", ids, "context_answer")
-        self.assertEqual(validate_response(bad, snap), "unsupported_number:8")
+        self.assertEqual(validate_response(bad, snap), "unsupported_time:8:30")
 
     def test_advice_follows_the_evidence(self):
         from contextcue_app.engine import advice
@@ -157,6 +157,59 @@ class ValidationTests(unittest.TestCase):
         for reason, resp in cases.items():
             with self.subTest(reason=reason):
                 self.assertEqual(validate_response(resp, snap), reason)
+
+    def test_board_mistakes_that_used_to_pass(self):
+        """Wrong replies from the thinking-mode experiment (16 November) that
+        the old checks let through to the screen."""
+        call = {"event_id": "c", "title": "Client call", "start_local": "11:05",
+                "start": "2026-11-16T19:05:00Z"}
+        prep = snapshot("preparation", (evidence("calendar.event.c", "event", call),),
+                        {"minutes_until_event": 4})
+        ids = ("calendar.event.c",)
+        cases = {
+            # A time's minutes or an ISO date the model never saw excused these.
+            "Client call at 11:00 AM.": "unsupported_time:11:00",
+            "Client call is at 11:05 AM. Rain chance is 0%.": "unsupported_number:0",
+            "Client call on 16 November.": "unsupported_number:16",
+            # A runaway reply and a glued-on stray token.
+            "Bring an umbrella for your next event, and bring an umbrella for your next event.":
+                "repetitive_text",
+            "Client call at 11:05 AM,orea": "unexpected_characters",
+        }
+        for text, reason in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(validate_response(response(text, ids, "preparation"), prep), reason)
+        good = response("Client call starts at 11:05 AM, in 4 minutes.", ids, "preparation")
+        self.assertIsNone(validate_response(good, prep))
+
+    def test_comfortable_must_match_the_range(self):
+        hot = snapshot()  # 27.4 degC, preferred 20-26, condition hot
+        ids = ("sensor.temperature", "pref.temperature_range")
+        self.assertEqual(validate_response(response("The room is comfortable at 27.4 degC.", ids), hot),
+                         "contradicts_facts:comfortable")
+        for ok in ("At 27.4 degC the room is not comfortable.", "27.4 degC is uncomfortable.",
+                   "It is 27.4 degC, less comfortable than your 20-26 degC."):
+            with self.subTest(ok=ok):
+                self.assertIsNone(validate_response(response(ok, ids), hot))
+        from dataclasses import replace
+        fine = replace(snapshot("context_answer", (evidence("sensor.temperature", "temperature", 22.0, unit="degC"),
+                                                   evidence("pref.temperature_range", "preferred_temperature_range",
+                                                            [20.0, 26.0])), None, "room_comfort"), facts={})
+        self.assertIsNone(validate_response(
+            response("The room is comfortable at 22 degC.", ids, "context_answer"), fine))
+
+    def test_briefing_does_not_show_room_readings_to_the_model(self):
+        # A room drift during generation made briefing replies obsolete.
+        from contextcue_app.recommendation import model_evidence_ids, model_view
+        ev = (evidence("calendar.schedule", "schedule_today", {"event_count": 1, "busy_ms": 1,
+               "next_event": {"title": "Stand-up", "start_local": "09:00"},
+               "remaining_events": [{"title": "Stand-up", "start_local": "09:00"}]}),
+              evidence("sensor.temperature", "temperature", 22.0, unit="degC"),
+              evidence("sensor.humidity", "humidity", 45.0, unit="%RH"))
+        brief = snapshot("morning", ev, {})
+        self.assertEqual([e["id"] for e in model_view(brief)["evidence"]], ["calendar.schedule"])
+        self.assertEqual(model_evidence_ids(brief), ("calendar.schedule",))
+        self.assertIn("Indoors 22.0 °C", factual_fallback(brief).text)  # still on screen
 
     def test_invalid_evidence_cannot_be_cited(self):
         snap = snapshot(ev=(evidence("sensor.temperature", "temperature", None, quality="stale"),))
@@ -223,6 +276,19 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.05)
         self.assertEqual((results[0].outcome, results[0].reason), ("rejected", "unsupported_number:35"))
         self.assertIsNone(results[0].response)
+
+    async def test_briefing_with_nothing_left_today_skips_the_model(self):
+        # Every model setup tested invented a next event for an empty evening.
+        model = SlowModel(0.01)
+        svc, results = await self.run_service(model)
+        empty = evidence("calendar.schedule", "schedule_today",
+                         {"event_count": 3, "busy_ms": 1, "next_event": None,
+                          "current_events": [], "remaining_events": []})
+        svc.submit(snapshot("morning", (empty,), {}))
+        await asyncio.sleep(0.05)
+        self.assertEqual(model.calls, [])
+        self.assertEqual((results[0].outcome, results[0].reason), ("skipped", "factual_only:no_events_left"))
+        self.assertIn("No more events today", factual_fallback(snapshot("morning", (empty,), {})).text)
 
     async def test_one_active_one_coalesced_waiting(self):
         model = SlowModel(0.05)

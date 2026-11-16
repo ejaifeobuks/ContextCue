@@ -191,7 +191,7 @@ function renderGlance(d) {
   const hero = $("#hero");
   const wasOpen = !!hero.querySelector(".why");
   put(hero, d.notice ? heroNotice(d.notice, d) : heroUpNext(d));
-  setAttr(hero, "class", "hero card" + (d.notice && d.notice.priority >= 2 ? " urgent" : ""));
+  setAttr(hero, "class", "hero card" + (L.isUrgent(d.notice) ? " urgent" : ""));
   // With "Why this?" open the hero takes the whole column and scrolls.
   const why = hero.querySelector(".why");
   $("#col-main").classList.toggle("why-open", !!why);
@@ -204,7 +204,7 @@ function renderGlance(d) {
 
 function heroNotice(n, d) {
   const inMs = L.noticeEventIn(n, d.clock.utc);
-  const rel = n.priority >= 2 ? pill("bad", "Urgent", "bell")
+  const rel = L.isUrgent(n) ? pill("bad", "Urgent", "bell")
     : inMs != null ? pill(inMs <= 15 * 60000 ? "warn" : "info", L.until(inMs), "clock") : "";
   const open = state.whyOpen === n.notice_id;
   const quiet = d.status.focus ? "Focus on: no automatic sound" : d.status.muted ? "Muted: shown on screen only" : "";

@@ -163,7 +163,11 @@ _HIDDEN_FACTS = {"event", "event_in_ms", "local_date", "local_time"}
 # Evidence a notice type does not need in its wording. Preparation is about one
 # event: with the whole day's schedule beside it the model left the event's
 # name out. The evidence stays in the snapshot for Why and validation.
-_HIDDEN_EVIDENCE = {PREPARATION: {"schedule_today"}}
+# Briefings cover the next event and the weather only: the room readings were
+# never in the wording, but a room drift of 0.5 °C during the ~30 s generation
+# made the reply obsolete and threw it away (board, 16 November). The factual
+# fallback still shows them.
+_HIDDEN_EVIDENCE = {PREPARATION: {"schedule_today"}, MORNING: {"temperature", "humidity"}}
 
 
 def _model_evidence(snapshot: ContextSnapshot) -> list:
@@ -306,27 +310,41 @@ class LlamaCppModel:
 # ---------------------------------------------------------------- validation
 
 _NUMBER = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?")
+_TIME = re.compile(r"\b(\d{1,2}):(\d{2})\b")
 # Plain English notice text: Latin letters (with accents), digits, common
 # punctuation, degree sign and dashes. Anything else is a stray model token.
 _PLAIN_TEXT = re.compile(r"[A-Za-z\u00C0-\u024F0-9\s.,;:!?'\"()%°/&+\-\u2013\u2014\u2019]*")
+# A stray token glued after punctuation (",orea"), or a phrase repeated in a
+# runaway reply: both passed the character and number checks on the board.
+_GLUED = re.compile(r"[,;!?][A-Za-z]")
+_REPEAT_WORDS = 5
+_COMFORTABLE = re.compile(r"\bcomfortable\b", re.I)
+_NEGATED = re.compile(r"(not|n't|less|un)\s*(very\s+)?$", re.I)
 
 
-def _allowed_numbers(snapshot: ContextSnapshot, referenced: set[str]) -> set[str]:
-    allowed: set[str] = set()
+def _allowed(snapshot: ContextSnapshot, referenced: set[str]) -> tuple[set[str], set[tuple[int, str]]]:
+    """Numbers and clock times the reply may contain: only what the model was
+    shown (model_view), so a time's minutes ("10:00" -> "0") or an ISO date
+    hidden from the model cannot excuse an invented number."""
+    numbers: set[str] = set()
+    times: set[tuple[int, str]] = set()
 
     def add(value):
         if isinstance(value, bool) or value is None:
             return
         if isinstance(value, (int, float)):
             for text in (f"{value:.0f}", f"{value:.1f}", str(value)):
-                allowed.add(text.rstrip("0").rstrip(".") if "." in text else text)
+                numbers.add(text.rstrip("0").rstrip(".") if "." in text else text)
         elif isinstance(value, str):
-            for match in _NUMBER.findall(value):
-                allowed.add(match.lstrip("0") or "0")
-                allowed.add(match)
-            # "19:00" may be written "7:00 PM" (the model view shows 12-hour time).
-            for hour in re.findall(r"\b(\d{1,2}):\d{2}\b", value):
-                allowed.add(str((int(hour) + 11) % 12 + 1))
+            for hour, minute in _TIME.findall(value):
+                h = int(hour)
+                # "19:00" may be written "7:00 PM" and "9:00 AM" as "9 AM".
+                for form in (h, (h + 11) % 12 + 1):
+                    times.add((form, minute))
+                    numbers.add(str(form))
+            for match in _NUMBER.findall(_TIME.sub(" ", value)):
+                numbers.add(match.lstrip("0") or "0")
+                numbers.add(match)
         elif isinstance(value, dict):
             for item in value.values():
                 add(item)
@@ -334,11 +352,12 @@ def _allowed_numbers(snapshot: ContextSnapshot, referenced: set[str]) -> set[str
             for item in value:
                 add(item)
 
-    for evidence in snapshot.evidence:
-        if evidence.evidence_id in referenced:
-            add(evidence.value)
-    add(snapshot.facts)
-    return allowed
+    view = model_view(snapshot)
+    for item in view.get("evidence", []):
+        if item["id"] in referenced:
+            add({k: v for k, v in item.items() if k not in ("id", "type")})
+    add(view.get("facts", {}))
+    return numbers, times
 
 
 def _number_key(text: str) -> str:
@@ -347,6 +366,20 @@ def _number_key(text: str) -> str:
         return format(float(text), "g")
     except ValueError:
         return text
+
+
+def _out_of_range(snapshot: ContextSnapshot) -> bool:
+    """The code already knows the room is outside the preferred range."""
+    if snapshot.facts.get("condition") in ("hot", "cold", "humid", "dry"):
+        return True
+    for metric in ("temperature", "humidity"):
+        reading = _evidence(snapshot, metric)
+        preference = _evidence(snapshot, f"preferred_{metric}_range")
+        if reading is not None and preference is not None:
+            low, high = preference.value
+            if not low <= reading.value <= high:
+                return True
+    return False
 
 
 def validate_response(response: ModelResponse, snapshot: ContextSnapshot) -> str | None:
@@ -360,18 +393,30 @@ def validate_response(response: ModelResponse, snapshot: ContextSnapshot) -> str
         return "empty_text"
     if len(text) > MAX_CHARS or len(re.findall(r"[.!?](?:\s|$)", text)) > MAX_SENTENCES:
         return "too_long"
-    if not _PLAIN_TEXT.fullmatch(text):
+    if not _PLAIN_TEXT.fullmatch(text) or _GLUED.search(text):
         return "unexpected_characters"
+    words = re.findall(r"[a-z0-9']+", text.lower())
+    phrases = [tuple(words[i:i + _REPEAT_WORDS]) for i in range(len(words) - _REPEAT_WORDS + 1)]
+    if len(phrases) != len(set(phrases)):
+        return "repetitive_text"
     available = {e.evidence_id for e in snapshot.evidence if e.quality == "valid"}
     referenced = set(response.evidence_ids)
     if not referenced:
         return "no_evidence"
     if not referenced <= available:
         return "unknown_or_invalid_evidence"
-    allowed = {_number_key(n) for n in _allowed_numbers(snapshot, referenced)}
-    for number in _NUMBER.findall(text):
+    numbers, times = _allowed(snapshot, referenced)
+    for hour, minute in _TIME.findall(text):
+        if (int(hour), minute) not in times:
+            return f"unsupported_time:{hour}:{minute}"
+    allowed = {_number_key(n) for n in numbers}
+    for number in _NUMBER.findall(_TIME.sub(" ", text)):
         if _number_key(number) not in allowed:
             return f"unsupported_number:{number}"
+    if _out_of_range(snapshot):
+        for match in _COMFORTABLE.finditer(text):
+            if not _NEGATED.search(text[:match.start()]):
+                return "contradicts_facts:comfortable"
     return None
 
 
@@ -506,12 +551,24 @@ def factual_fallback(snapshot: ContextSnapshot) -> ModelResponse | None:
                          runtime_version="factual_fallback", prompt_version=None)
 
 
+def factual_only_reason(snapshot: ContextSnapshot) -> str | None:
+    """Requests answered from facts without the model. With nothing left on
+    the calendar, every model setup tested invented a next event ("Next event
+    is a meeting at 10:00 AM"); the facts say it plainly."""
+    if snapshot.category == MORNING:
+        schedule = _evidence(snapshot, "schedule_today")
+        if schedule is not None and not (schedule.value.get("current_events")
+                                         or schedule.value.get("remaining_events")):
+            return "factual_only:no_events_left"
+    return None
+
+
 # ------------------------------------------------------------------ service
 
 @dataclass
 class GenerationResult:
     snapshot: ContextSnapshot
-    outcome: str  # generated | rejected | timed_out | cancelled | error
+    outcome: str  # generated | rejected | skipped | timed_out | cancelled | error
     response: ModelResponse | None
     reason: str | None
     started_at: str | None
@@ -585,9 +642,13 @@ class RecommendationService:
         try:
             if snapshot.request_id in self._cancelled:
                 raise asyncio.CancelledError
-            response = await asyncio.wait_for(self.backend.complete(snapshot), self.timeout_s)
-            reason = validate_response(response, snapshot)
-            outcome = "generated" if reason is None else "rejected"
+            skip = factual_only_reason(snapshot)
+            if skip:
+                outcome, reason = "skipped", skip
+            else:
+                response = await asyncio.wait_for(self.backend.complete(snapshot), self.timeout_s)
+                reason = validate_response(response, snapshot)
+                outcome = "generated" if reason is None else "rejected"
         except asyncio.TimeoutError:
             outcome, reason = "timed_out", f"deadline_{self.timeout_s:g}s"
         except asyncio.CancelledError:
