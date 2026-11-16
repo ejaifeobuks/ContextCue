@@ -135,7 +135,7 @@ function render() {
 
 function renderHeader(d) {
   const frame = $("#frame");
-  setAttr(frame, "data-sky", L.skyPhase(d.clock.local_time));
+  setAttr(frame, "data-sky", L.skyPhase(d.clock.local_time, d.clock.sun));
   const badges = [
     d.gateway_mode === "simulated" ? pill("sim", "Simulated sensors", "flask-conical") : pill("real", "Real sensors", "cpu"),
     state.demo ? pill("demo", "Demo Mode", "monitor") : "",

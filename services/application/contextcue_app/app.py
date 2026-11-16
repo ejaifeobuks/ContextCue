@@ -25,6 +25,7 @@ from .recommendation import (SUPPORTED_QUESTIONS, GenerationResult, ModelBackend
                              RecommendationService, factual_fallback)
 from .repository import DataRepository
 from .settings import Settings
+from .sun import sun_view
 from .sources import Scenario, demo_shift, load_scenarios, make_calendar_adapter, make_weather_adapter
 
 log = logging.getLogger("contextcue.app")
@@ -598,6 +599,8 @@ class ContextCueApp:
                 "local_seconds": local.strftime("%S"),
                 "local_date": local.strftime("%a %d %b %Y"), "time_zone": s.time_zone,
                 "mode": self.clock.mode,
+                # Today's sunrise and sunset at the chosen location, for the sky.
+                "sun": sun_view(now, s.location, s.zone),
                 "label": "Scenario time (simulated)" if self.clock.mode == "simulated" else "Device time",
             },
             "display": self.display(),

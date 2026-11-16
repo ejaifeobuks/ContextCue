@@ -221,3 +221,20 @@ test("parts of the day follow AM/PM: midnight to noon is morning", () => {
   assert.equal(L.greeting(""), "Hello");
   assert.equal(L.briefingName(undefined), "Your briefing");
 });
+
+test("the sky follows today's sunrise and sunset when known", () => {
+  const sun = { sunrise: "06:19", sunset: "16:47" };  // San Diego, mid-November
+  assert.equal(L.skyPhase("00:23", sun), "night");    // morning by the clock, still dark
+  assert.equal(L.skyPhase("05:30", sun), "dawn");
+  assert.equal(L.skyPhase("07:10", sun), "dawn");
+  assert.equal(L.skyPhase("07:30", sun), "day");
+  assert.equal(L.skyPhase("16:00", sun), "dusk");
+  assert.equal(L.skyPhase("17:40", sun), "dusk");
+  assert.equal(L.skyPhase("18:00", sun), "night");
+  const summer = { sunrise: "04:43", sunset: "21:21" }; // London, June
+  assert.equal(L.skyPhase("19:30", summer), "day");
+  assert.equal(L.skyPhase("04:00", summer), "dawn");
+  // No location (or polar day/night): the fixed hours as before.
+  assert.equal(L.skyPhase("06:00", null), "dawn");
+  assert.equal(L.skyPhase("18:00", undefined), "dusk");
+});

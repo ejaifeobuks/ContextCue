@@ -36,9 +36,25 @@
   }
 
   // Sky palette for the header scene; "night" also covers quiet late hours.
-  function skyPhase(hhmm) {
-    const h = Number(String(hhmm ?? "").split(":")[0]);
-    if (!Number.isFinite(h)) return "day";
+  // The sky follows daylight, not the greeting. With today's sunrise and
+  // sunset (calculated on the board for the chosen location), dawn and dusk
+  // are the hour either side of them; without a location, fixed hours.
+  const TWILIGHT_MIN = 60;
+  function minutes(hhmm) {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm ?? ""));
+    return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+  }
+
+  function skyPhase(hhmm, sun) {
+    const now = minutes(hhmm);
+    if (now == null) return "day";
+    const rise = minutes(sun && sun.sunrise), set = minutes(sun && sun.sunset);
+    if (rise != null && set != null && rise < set) {
+      if (Math.abs(now - rise) < TWILIGHT_MIN) return "dawn";
+      if (Math.abs(now - set) < TWILIGHT_MIN) return "dusk";
+      return now > rise && now < set ? "day" : "night";
+    }
+    const h = Math.floor(now / 60);
     if (h >= 5 && h < 8) return "dawn";
     if (h >= 8 && h < 17) return "day";
     if (h >= 17 && h < 20) return "dusk";
