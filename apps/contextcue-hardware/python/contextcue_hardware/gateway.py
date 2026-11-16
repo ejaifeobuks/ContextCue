@@ -42,6 +42,18 @@ from contextcue_contracts.outputs import (
 from .transport import ArduinoBridgeTransport, BridgeTransport
 
 
+
+# The Distance sensor answers "distance_timeout" when nothing is in range. The
+# sample is still unknown (never "far away"), but the sensor itself is working,
+# so it must not count as a fault (red Pixels, a Status problem).
+SENSOR_NO_TARGET = frozenset({"distance_timeout"})
+
+
+def _sensor_working(quality, error) -> bool:
+    return quality == Quality.VALID or (
+        quality == Quality.UNAVAILABLE and error in SENSOR_NO_TARGET)
+
+
 class ProtocolError(ValueError):
     """The peer's response cannot be safely used as hardware evidence."""
 
@@ -645,10 +657,11 @@ class HardwareGateway:
         tracker.last_seq = seq
         tracker.last_uptime = uptime
         tracker.fingerprint = fingerprint
+        working = _sensor_working(quality, error)
         tracker.health = HealthState(
-            module_id, "ready" if quality == Quality.VALID else "unavailable",
-            None if quality == Quality.VALID else error,
-            tracker.samples[0].received_at if quality == Quality.VALID else None,
+            module_id, "ready" if working else "unavailable",
+            None if working else error,
+            tracker.samples[0].received_at if working else None,
             "uno_q_mcu",
         )
         self._capabilities = replace(
@@ -697,7 +710,7 @@ class HardwareGateway:
             prior = tracker.health
             valid = (
                 bool(module_samples)
-                and all(s.quality == Quality.VALID for s in module_samples)
+                and all(_sensor_working(s.quality, s.error) for s in module_samples)
                 and prior is not None
                 and prior.state == "ready"
             )

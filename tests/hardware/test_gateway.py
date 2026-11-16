@@ -186,6 +186,23 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         thermo = tuple(s for s in state.samples if s.module_id == "thermo")
         self.assertTrue(all(s.value == 0 and s.quality == Quality.VALID for s in thermo))
 
+    async def test_nothing_in_range_is_unknown_but_not_a_fault(self):
+        # Empty desk: the sensor works, so Distance stays ready (no red Pixels),
+        # but the sample carries no distance, never "far away".
+        self.peer.distance_data = distance_reading(q="unavailable", mm=None, err="distance_timeout")
+        state = await self.gateway.read_state()
+        (sample,) = (s for s in state.samples if s.module_id == "distance")
+        self.assertEqual((sample.quality, sample.value, sample.error),
+                         (Quality.UNAVAILABLE, None, "distance_timeout"))
+        health = {h.component_id: h for h in state.health}
+        self.assertEqual((health["distance"].state, health["distance"].reason), ("ready", None))
+        # A real Distance fault still is one.
+        self.peer.distance_data = distance_reading(seq=2, q="unavailable", mm=None, err="distance_disconnected")
+        state = await self.gateway.read_state()
+        health = {h.component_id: h for h in state.health}
+        self.assertEqual((health["distance"].state, health["distance"].reason),
+                         ("unavailable", "distance_disconnected"))
+
     async def test_repeated_poll_does_not_refresh_old_observation(self):
         first = await self.gateway.read_state()
         self.clock.now += 6
