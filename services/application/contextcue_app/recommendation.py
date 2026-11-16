@@ -32,11 +32,13 @@ from .contracts import (CATEGORIES, COMFORT, CONTEXT_ANSWER, MORNING, PREPARATIO
 MAX_SENTENCES = 3
 MAX_CHARS = 400
 # G1 release deadline. Measured on the UNO Q (Qwen3.5-0.8B Q4_0, CPU, app
-# prompts): p50 about 22 s, max 29 s with nothing else loading the board.
-# 45 s leaves headroom for sensing and the UI; a later reply is discarded and
-# the notice shows the labeled factual fallback.
-GENERATION_TIMEOUT_S = 45.0
-PROMPT_VERSION = "contextcue-prompt-3"
+# prompts, kiosk running): p50 about 21 s, max 31 s on the demo calendar. A
+# real calendar briefing (12 November) took about 45 s: about 250 new input
+# tokens at 10 tokens/s plus about 60 output tokens at 2.3 tokens/s. 60 s
+# leaves headroom; a later reply is discarded and the notice shows the
+# labeled factual fallback.
+GENERATION_TIMEOUT_S = 60.0
+PROMPT_VERSION = "contextcue-prompt-4"
 
 SUPPORTED_QUESTIONS = {
     "next_event": "What is my next event?",
@@ -76,7 +78,7 @@ Write like a helpful friend, not a report. Never state the current time. If fact
 Write times exactly as given, like 9:00 AM. Write rain chances as whole percentages.
 forecast_next is the weather now; forecast_later is later today, from its "from" time.
 If no_more_events_today is true, say there is nothing else on the calendar today.
-briefing: name next_event with its start time, then the weather, including rain later today.
+briefing: in under 25 words, name next_event with its start time, then the weather, including rain later today.
 preparation: name the event and its start time; use facts.minutes_until_event if present; mention rain only if rain_chance_pct is 50 or more.
 comfort: give the reading and the preferred range.
 context_answer: answer request.question in one or two sentences."""
@@ -107,28 +109,30 @@ def _drop_empty(value: dict) -> dict:
     return {k: v for k, v in value.items() if v not in (None, [], {}, "")}
 
 
-def _compact(event) -> dict:
+def _compact(event, brief: bool = False) -> dict:
     """The fields a model needs from one evidence item, in plain local terms.
 
     The model only sees this view; validation still checks its reply against
-    the full evidence, so dropping fields cannot loosen any check.
+    the full evidence, so dropping fields cannot loosen any check. `brief`
+    (briefings) keeps only the next event: every input token costs about
+    0.1 s on the UNO Q, and a briefing does not mention the rest.
     """
     v, metric = event.value, event.metric
     if metric == "schedule_today" and isinstance(v, dict):
-        def brief(e):
+        def item(e):
             return _drop_empty({"title": e.get("title"), "start": clock12(e.get("start_local")),
-                                "location": e.get("location")}) if e else None
+                                "location": None if brief else e.get("location")}) if e else None
         nxt = v.get("next_event")
         current = v.get("current_events") or []
         remaining = v.get("remaining_events") or []
-        later = [brief(e) for e in remaining
-                 if not nxt or e.get("event_id") != nxt.get("event_id")][:2]
+        later = [] if brief else [item(e) for e in remaining
+                                  if not nxt or e.get("event_id") != nxt.get("event_id")][:2]
         # Only what is still ahead: a whole-day count read as "4 events today"
         # in the evening, after every one of them had ended.
         left = len(current) + len(remaining)
         return _drop_empty({"events_left_today": left, "no_more_events_today": left == 0 or None,
                             "now": [e.get("title") for e in current],
-                            "next_event": brief(nxt), "later": later, "all_day": v.get("all_day")})
+                            "next_event": item(nxt), "later": later, "all_day": v.get("all_day")})
     if metric == "event" and isinstance(v, dict):
         return _drop_empty({"title": v.get("title"), "start": clock12(v.get("start_local")),
                             "location": v.get("location")})
@@ -177,7 +181,8 @@ def model_view(snapshot: ContextSnapshot) -> dict:
         request["question"] = SUPPORTED_QUESTIONS.get(snapshot.question, snapshot.question)
     facts = {k: v for k, v in snapshot.facts.items() if k not in _HIDDEN_FACTS}
     hidden = _HIDDEN_EVIDENCE.get(snapshot.category, set())
-    evidence = [{"id": e.evidence_id, "type": e.metric, **_compact(e)}
+    brief = snapshot.category == MORNING
+    evidence = [{"id": e.evidence_id, "type": e.metric, **_compact(e, brief)}
                 for e in _model_evidence(snapshot) if e.metric not in hidden]
     return _drop_empty({"request": request, "facts": facts, "evidence": evidence})
 
@@ -252,7 +257,13 @@ class LlamaCppModel:
         else:
             body["response_format"] = {"type": "json_object"}
         payload = self._request("/chat/completions", body, self.timeout_s)
-        return payload["choices"][0]["message"]["content"]
+        choice = payload["choices"][0]
+        # A reply cut off at max_tokens is a runaway, not a notice: on the board
+        # one such reply drifted into stray words ("11:0 abajo ... iszlich")
+        # that the number and character checks cannot see.
+        if choice.get("finish_reason") == "length":
+            raise ValueError("truncated_model_output")
+        return choice["message"]["content"]
 
     def _warm(self) -> None:
         self._ensure_model()

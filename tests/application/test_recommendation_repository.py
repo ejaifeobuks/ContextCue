@@ -66,6 +66,11 @@ class ValidationTests(unittest.TestCase):
         [sched] = [e for e in morning["evidence"] if e["id"] == "calendar.schedule"]
         self.assertEqual(morning["request"], {"category": "briefing"})  # any hour, not "morning"
         self.assertEqual(sched["next_event"], {"title": "Stand-up", "start": "9:00 AM"})
+        # A briefing names only the next event: each input token costs about
+        # 0.1 s on the board, and a real calendar briefing hit the deadline.
+        self.assertNotIn("later", sched)
+        busy = model_view(snapshot("context_answer", ev, {}, "schedule_today"))
+        [sched] = [e for e in busy["evidence"] if e["id"] == "calendar.schedule"]
         self.assertEqual(sched["later"], [{"title": "Review", "start": "10:00 AM"}])
         self.assertNotIn("local_time", morning.get("facts", {}))  # quoted as an event time on the board
         prep = snapshot("preparation", ev, {"minutes_until_event": 22, "event_in_ms": 1320000})
@@ -267,7 +272,9 @@ class LlamaClientTests(unittest.IsolatedAsyncioTestCase):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 test.requests.append((self.path, body))
                 content = test.reply
-                data = json.dumps({"choices": [{"message": {"content": content}}]}).encode()
+                finish = getattr(test, "finish_reason", "stop")
+                data = json.dumps({"choices": [{"message": {"content": content},
+                                                "finish_reason": finish}]}).encode()
                 self.send_response(200)
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
@@ -294,6 +301,16 @@ class LlamaClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["max_tokens"], 100)
         self.assertNotIn("tools", body)  # the model never gets hardware tools
         self.assertIn("sensor.temperature", body["messages"][1]["content"])
+
+    async def test_reply_cut_off_at_max_tokens_is_rejected(self):
+        # Board, 12 November: a reply drifted into stray words ("11:0 abajo ...
+        # iszlich") until max_tokens; plain letters pass the character check.
+        from contextcue_app.recommendation import LlamaCppModel
+        self.reply = '{"text": "Next event is PHL 201 at 11:0 abajo, the weather iszlich'
+        self.finish_reason = "length"
+        model = LlamaCppModel(self.url, "qwen-test", timeout_s=2)
+        with self.assertRaisesRegex(ValueError, "truncated_model_output"):
+            await model.complete(snapshot())
 
     async def test_request_is_compact_and_schema_constrained(self):
         import json
