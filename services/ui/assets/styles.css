@@ -76,6 +76,8 @@ h1, h2, h3, p { margin: 0; }
   position: absolute; inset: 0 0 auto 0; height: 150px; overflow: hidden;
   background: var(--sky);
   transition: height .35s ease;
+  /* Own compositor layer: header text changes must not repaint the sky. */
+  will-change: transform; contain: paint;
 }
 #frame[data-tab="settings"] #sky { height: var(--header); }
 #frame[data-sky="dawn"] { --sky: linear-gradient(180deg, #34508a 0%, #7a8fc4 55%, #f2b98f 100%); --sun: #ffd38a; }
@@ -113,8 +115,8 @@ h1, h2, h3, p { margin: 0; }
   min-height: 42px; padding: 0 14px; border-radius: 21px;
   display: inline-flex; align-items: center; gap: 7px;
   font-size: 15px; font-weight: 650; color: #fff; white-space: nowrap;
-  background: rgba(255, 255, 255, .14); border: 1px solid rgba(255, 255, 255, .28);
-  backdrop-filter: blur(4px);
+  /* No backdrop blur: costly to redraw on the UNO Q, barely visible here. */
+  background: rgba(255, 255, 255, .16); border: 1px solid rgba(255, 255, 255, .28);
 }
 .hbtn .i { width: 18px; height: 18px; }
 .hbtn.on { background: #fff; color: var(--accent-2); border-color: #fff; }

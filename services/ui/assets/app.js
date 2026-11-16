@@ -40,6 +40,12 @@ const modePill = (mode) => { const b = L.modeBadge(mode); return b ? pill(b.cls,
 function put(el, html) {
   if (el && el._html !== html) { el.innerHTML = html; el._html = html; }
 }
+// The UI polls twice a second. Writing an unchanged value still makes
+// Chromium repaint (textContent replaces the text node), and on the UNO Q
+// every header repaint redraws the sky under it: that kept the kiosk at about
+// 1.4 CPU cores and halved the on-board model's speed. Write only changes.
+function setText(el, text) { if (el && el.textContent !== text) el.textContent = text; }
+function setAttr(el, name, value) { if (el && el.getAttribute(name) !== value) el.setAttribute(name, value); }
 
 /* ------------------------------------------------------------ server */
 async function poll() {
@@ -116,7 +122,8 @@ function render() {
   // ?why=1 opens "Why this?" on whichever notice the backend selected.
   if (state.whyOpen === "__selected__") state.whyOpen = d.notice ? d.notice.notice_id : null;
   renderHeader(d);
-  $("#dim").style.opacity = String(Math.max(0, (1 - d.display.screen_level) * 0.75).toFixed(2));
+  const dim = $("#dim"), opacity = String(Math.max(0, (1 - d.display.screen_level) * 0.75).toFixed(2));
+  if (dim.style.opacity !== opacity) dim.style.opacity = opacity;
   if (state.tab === "glance") renderGlance(d);
   // Not while a link is being pasted: a re-render would empty the field.
   else if (!state.dragging && !(document.activeElement && document.activeElement.id === "cal-link")) renderSettings(d);
@@ -126,7 +133,7 @@ function render() {
 
 function renderHeader(d) {
   const frame = $("#frame");
-  frame.dataset.sky = L.skyPhase(d.clock.local_time);
+  setAttr(frame, "data-sky", L.skyPhase(d.clock.local_time));
   const badges = [
     d.gateway_mode === "simulated" ? pill("sim", "Simulated sensors", "flask-conical") : pill("real", "Real sensors", "cpu"),
     state.demo ? pill("demo", "Demo Mode", "monitor") : "",
@@ -136,23 +143,23 @@ function renderHeader(d) {
   const focus = $("#btn-focus");
   put(focus, `${icon("moon")}<span>${d.status.focus ? "Focus on" : "Focus"}</span>`);
   focus.classList.toggle("on", d.status.focus);
-  focus.setAttribute("aria-pressed", String(d.status.focus));
+  setAttr(focus, "aria-pressed", String(d.status.focus));
 
   const mute = $("#btn-mute");
   put(mute, `${icon(d.status.muted ? "volume-x" : "volume-2")}<span>${d.status.muted ? "Muted" : "Sound on"}</span>`);
   mute.classList.toggle("warn", d.status.muted);
-  mute.setAttribute("aria-pressed", String(d.status.muted));
+  setAttr(mute, "aria-pressed", String(d.status.muted));
 
   const problems = d.health.filter(L.isProblem);
   const status = $("#btn-status");
   put(status, problems.length
     ? `${icon("triangle-alert")}<span>${problems.length} issue${problems.length > 1 ? "s" : ""}</span>`
     : `${icon("circle-check")}<span>All ready</span>`);
-  status.className = "hbtn " + (problems.length ? "warn" : "ok");
-  status.setAttribute("aria-label", `Device status: ${problems.length ? problems.length + " issues" : "all ready"}`);
+  setAttr(status, "class", "hbtn " + (problems.length ? "warn" : "ok"));
+  setAttr(status, "aria-label", `Device status: ${problems.length ? problems.length + " issues" : "all ready"}`);
 
-  $("#time").textContent = L.fmt12(d.clock.local_time);
-  $("#clock-label").textContent = d.clock.mode === "simulated" ? "Scenario time" : "Device time";
+  setText($("#time"), L.fmt12(d.clock.local_time));
+  setText($("#clock-label"), d.clock.mode === "simulated" ? "Scenario time" : "Device time");
 }
 
 /* ------------------------------------------------------------ glance */
@@ -175,14 +182,14 @@ function layout(demo) {
 }
 
 function renderGlance(d) {
-  $("#greeting").textContent = L.greeting(d.clock.local_time);
+  setText($("#greeting"), L.greeting(d.clock.local_time));
   const fictional = [d.schedule, d.forecast].some((x) => x && x.source_mode === "simulated");
   put($("#dateline"), `<span>${esc(longDate(d))}</span>${d.clock.mode === "simulated" ? `<span class="dot">·</span><span>Scenario ${esc(L.fmt12(d.clock.local_time))}</span>` : ""}${fictional ? pill("sim on-sky", "Demo data", "flask-conical") : ""}`);
   layout(state.demo);
   const hero = $("#hero");
   const wasOpen = !!hero.querySelector(".why");
   put(hero, d.notice ? heroNotice(d.notice, d) : heroUpNext(d));
-  hero.className = "hero card" + (d.notice && d.notice.priority >= 2 ? " urgent" : "");
+  setAttr(hero, "class", "hero card" + (d.notice && d.notice.priority >= 2 ? " urgent" : ""));
   // With "Why this?" open the hero takes the whole column and scrolls.
   const why = hero.querySelector(".why");
   $("#col-main").classList.toggle("why-open", !!why);
