@@ -36,6 +36,9 @@ SLOW_TICK_S = 1.0
 # an object is near, which would otherwise renew it 10 times a second.
 HEARTBEAT_S = 1.0
 WAKE_TIMEOUT_S = 120.0
+# Asleep, the screen is dimmed almost to black (the panel's backlight cannot be
+# switched off from the app); the clock stays faintly readable.
+SLEEP_SCREEN_LEVEL = 0.08
 EVIDENCE_SAVE_S = 30.0
 RETENTION_S = 3600.0
 SENSOR_MODULES = ("thermo", "light", "distance")
@@ -170,7 +173,10 @@ class ContextCueApp:
             self.notifications.last_pixels = None  # resynchronize current state only
             self._diag("mcu_reboot_detected", {"boot_id": self._state.boot_id})
         near = self.engine.proximity_status.near_transition
-        if near:
+        # Awake while something is near (someone sitting at the desk), not just
+        # on the approach; the sleep countdown starts once it is clear again.
+        # Room light never wakes it: lights go on for people passing through.
+        if near or self.engine.proximity_status.state == "near":
             self._wake()
         # A wake evaluates triggers at once, so an approach is answered promptly.
         slow = near or self._last_slow is None or mono - self._last_slow >= SLOW_TICK_S
@@ -341,7 +347,7 @@ class ContextCueApp:
         level = brightness(light.get("value") if light.get("quality") == "valid" else None, self.settings)
         idle = self.clock.monotonic() - max(self._last_input, self._last_wake)
         awake = idle < WAKE_TIMEOUT_S
-        return {"awake": awake, "screen_level": level["screen"] if awake else min(level["screen"], 0.2),
+        return {"awake": awake, "screen_level": level["screen"] if awake else SLEEP_SCREEN_LEVEL,
                 "pixel_level": level["pixels"], "source": level["source"],
                 "calibrated": level["calibrated"], "native_brightness": False,
                 "method": "visual_overlay"}

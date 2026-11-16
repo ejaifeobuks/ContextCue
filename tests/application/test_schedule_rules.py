@@ -177,14 +177,27 @@ class ProximityTests(unittest.TestCase):
         p.update(0.0, 900)
         p.update(0.6, 900)
         self.assertEqual(p.update(1.0, 600).state, "clear")  # 500-650 keeps state
-        status = p.update(1.1, None, "distance_timeout")
-        self.assertEqual(status.reason, "distance_timeout")
+        status = p.update(1.1, None, "distance_bus_error")
+        self.assertEqual((status.state, status.reason), ("unknown", "distance_bus_error"))
         self.assertFalse(status.near_transition)
-        # An unknown reading resets persistence.
+        # An unknown (faulty) reading resets persistence.
         p.update(1.2, 400)
-        p.update(1.5, None, "distance_timeout")
+        p.update(1.5, None, "distance_disconnected")
         self.assertFalse(p.update(2.0, 400).near_transition)
         self.assertTrue(p.update(2.5, 400).near_transition)
+
+    def test_nothing_in_range_is_clear_so_an_approach_wakes(self):
+        # Empty desk: the sensor answers "nothing in range" (distance_timeout).
+        p = ProximityMonitor()
+        p.update(0.0, None, "distance_timeout")
+        status = p.update(0.6, None, "distance_timeout")
+        self.assertEqual((status.state, status.reason), ("clear", None))
+        p.update(1.0, 420)
+        self.assertTrue(p.update(1.5, 420).near_transition)
+        # A single "nothing in range" blip while sitting there is not a new approach.
+        p.update(2.0, None, "distance_timeout")
+        p.update(2.1, 420)
+        self.assertFalse(p.update(3.0, 420).near_transition)
 
     def test_flicker_through_unknown_does_not_rewake(self):
         p = ProximityMonitor()

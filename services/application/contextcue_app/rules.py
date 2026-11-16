@@ -17,6 +17,8 @@ COMFORT_COOLDOWN_S = 15 * 60.0
 NEAR_MM = 500.0
 CLEAR_MM = 650.0
 PROXIMITY_PERSISTENCE_S = 0.5
+# Distance errors that mean "working, nothing in range", not a fault.
+NO_TARGET_ERRORS = frozenset({"distance_timeout"})
 SCREEN_MIN, SCREEN_MAX, SCREEN_FALLBACK = 0.20, 1.00, 0.60
 PIXELS_MIN, PIXELS_MAX, PIXELS_FALLBACK = 0.05, 0.40, 0.15
 
@@ -132,7 +134,7 @@ class ProximityStatus:
 
 
 class ProximityMonitor:
-    """Near <=500 mm, clear >650 mm, 500 ms valid persistence.
+    """Near <=500 mm, clear >650 mm or nothing in range, 500 ms persistence.
 
     Only a confirmed clear -> near transition wakes the screen, so a stationary
     object (or a flickering out-of-range reading) never repeats the wake.
@@ -146,12 +148,17 @@ class ProximityMonitor:
         self.clear_since: float | None = None
 
     def update(self, now: float, distance_mm: float | None, error: str | None = None) -> ProximityStatus:
-        if distance_mm is None:
+        if distance_mm is None and error not in NO_TARGET_ERRORS:
             self._candidate = None
             self._candidate_since = None
             return ProximityStatus("unknown", self.confirmed, False, self.clear_since,
                                    error or "distance_unavailable")
-        if distance_mm <= NEAR_MM:
+        if distance_mm is None:
+            # A working sensor with nothing in range (about 1.3 m) has nothing
+            # within NEAR_MM either: the empty desk is "clear", so walking up
+            # to it wakes the screen. The reading itself stays unknown.
+            reading = "clear"
+        elif distance_mm <= NEAR_MM:
             reading = "near"
         elif distance_mm > CLEAR_MM:
             reading = "clear"

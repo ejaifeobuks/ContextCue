@@ -337,3 +337,38 @@ class RealGatewayContract(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DisplayWakeFlow(AppHarness):
+    """Screen sleep and wake: an approach wakes it, presence keeps it awake."""
+
+    async def sleep_screen(self):
+        await self.step(10, 14)  # past WAKE_TIMEOUT_S with no input
+        disp = self.app.display()
+        self.assertFalse(disp["awake"])
+        self.assertEqual(disp["screen_level"], 0.08)  # nearly black, not just 20%
+
+    async def test_stays_awake_while_someone_is_near_then_sleeps(self):
+        self.build("comfort")
+        self.gw.set_value("distance", 350)
+        await self.step(10, 20)  # 200 s sitting at the desk, no touch
+        self.assertTrue(self.app.display()["awake"])
+        self.gw.set_value("distance", 900)  # they leave
+        await self.step(10, 6)
+        self.assertTrue(self.app.display()["awake"])  # countdown runs from leaving
+        await self.step(10, 8)
+        self.assertFalse(self.app.display()["awake"])
+
+    async def test_room_lights_do_not_wake_the_screen(self):
+        # Lights go on for someone passing through; only an approach wakes it.
+        self.build("comfort")
+        self.gw.set_value("distance", 900)
+        self.gw.set_value("ambient_light", 20)
+        await self.sleep_screen()
+        self.gw.set_value("ambient_light", 900)
+        await self.step(1, 3)
+        self.assertFalse(self.app.display()["awake"])
+        self.gw.set_value("distance", 350)  # someone walks up to the desk
+        await self.step(0.3, 3)
+        self.assertTrue(self.app.display()["awake"])
+        self.assertGreater(self.app.display()["screen_level"], 0.9)  # at the bright-room level

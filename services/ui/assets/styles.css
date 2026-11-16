@@ -422,7 +422,7 @@ input[type=range] { width: 240px; height: 44px; accent-color: var(--accent); }
 #offline .i { width: 26px; height: 26px; }
 #offline div { display: flex; flex-direction: column; font-size: 14px; }
 #offline[hidden] { display: none; }
-#dim { position: absolute; inset: 0; z-index: 30; background: #000; opacity: 0; pointer-events: none; transition: opacity 2s ease; }
+#dim { position: absolute; inset: 0; z-index: 30; background: #000; opacity: 0; pointer-events: none; transition: opacity .6s ease; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }

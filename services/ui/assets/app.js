@@ -122,7 +122,9 @@ function render() {
   // ?why=1 opens "Why this?" on whichever notice the backend selected.
   if (state.whyOpen === "__selected__") state.whyOpen = d.notice ? d.notice.notice_id : null;
   renderHeader(d);
-  const dim = $("#dim"), opacity = String(Math.max(0, (1 - d.display.screen_level) * 0.75).toFixed(2));
+  // Awake: up to 75% dark from the Light sensor. Asleep: nearly black, the
+  // clock still faintly readable (the backlight itself stays on).
+  const dim = $("#dim"), opacity = (d.display.awake ? Math.max(0, (1 - d.display.screen_level) * 0.75) : 0.92).toFixed(2);
   if (dim.style.opacity !== opacity) dim.style.opacity = opacity;
   if (state.tab === "glance") renderGlance(d);
   // Not while a link is being pasted: a re-render would empty the field.
