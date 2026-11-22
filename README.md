@@ -1,369 +1,429 @@
 # ContextCue
 
-ContextCue is an explainable desk companion designed to combine calendar and
-weather context with real indoor sensing. It is intended to give a user useful,
-timely desk cues through a screen, visual indicators, optional short buzzer
-tones, and local Bluetooth speech.
+ContextCue is a desk companion that runs on an Arduino UNO Q. It combines your
+calendar, the weather forecast and real indoor sensing into one timely cue,
+and it can always show why it gave that cue. It shows cues on a 7-inch
+touchscreen and a Modulino Pixels LED strip. It can also play an optional
+Buzzer chime and speak the cue with an offline voice. An AI model running on
+the board words each cue, and rule-based code decides when a cue is due.
 
-The larger product is planned for an Arduino UNO Q. Its Linux side will run the
-application, policy, model worker, persistence, user interface, and hardware
-gateway. Its microcontroller side will read the Modulino devices and enforce
-safe hardware limits.
+## Problem statement
 
-> **Current status:** this repository contains the hardware sensing milestones,
-> not the complete ContextCue product. The implemented path includes real
-> Modulino Thermo, Light, and Distance acquisition with independent Bridge RPCs,
-> Python decoding, freshness, and health. The remaining application and
-> hardware modules are planned or partially implemented.
+Busy students and knowledge workers rely on separate calendars, weather apps
+and room conditions. Each tool presents a narrow fact, and the user has to
+decide which facts matter together and what to do about them. "Design review at
+10:00" and "70% chance of rain" are two facts in two apps; "bring an umbrella"
+is the cue nobody gives. Static reminders also assume the user is watching the
+right screen, and cloud-based assistants stop helping when the network or a
+service fails.
 
-## What ContextCue is meant to do
+(Adapted from
+[`ContextCue_Problem_Solution_and_Simulation_Strategy.docx`](docs/background/ContextCue_Problem_Solution_and_Simulation_Strategy.docx),
+section 2.)
 
-ContextCue will:
+## What ContextCue does
 
-- Show the current time, schedule, indoor readings, forecast state, audio state,
-  operating mode, and at most one highest-priority notice.
-- Generate short, evidence-grounded morning, preparation, comfort, and
-  context-question responses.
-- Explain why a recommendation was made by showing its source values, units,
-  timestamps, freshness, and real/simulated labels.
-- Use deterministic software rules for freshness, eligibility, priority,
-  acknowledgement, Focus, mute, quiet hours, deduplication, and expiration.
-- Keep user controls and sensor handling responsive while model generation or
-  audio playback is running.
-- Continue unaffected functions when an individual sensor, Bridge, model,
-  source, display, or audio component fails.
-- Apply conservative availability-aware audio rules: near-desk reminders may
-  use one chime or spoken notice when enabled; away-mode audio is opt-in and
-  announces at most once; disconnected audio queues reminders silently; Focus
-  and Do Not Disturb collect ordinary reminders for later.
-- Use labeled local calendar and weather fixtures first; live providers are
-  supported through adapters when configured.
+- Shows the time, the next event, room comfort, the forecast and **at most one
+  highest-priority notice** on a 1024x600 touch kiosk UI.
+- Raises four kinds of notice:
+  - **Morning briefing**, when you approach the desk in the morning window
+    (default 06:00–11:00) or tap **Brief me**.
+  - **Preparation**, when the next event starts within 30 minutes (urgent
+    within 10). It mentions rain at 50% or more, except for online events.
+  - **Comfort**, when temperature or humidity stays outside your preferred
+    range for 60 seconds. Each condition has a 15-minute cooldown.
+  - **Context answer**, for four fixed questions: *What is my next event?*,
+    *Will it rain today?*, *How is the room?* and *How busy is today?*
+- Words each notice with an on-board LLM (Qwen3.5-0.8B, llama.cpp, CPU only).
+  Every reply is validated against the evidence. If a reply is late, invalid
+  or unavailable, a labeled factual fallback is shown instead.
+- Explains every notice with **Why this?**: each source value, its unit,
+  timestamps, freshness, whether it is real or simulated, and whether the text
+  came from the AI or the factual fallback.
+- Signals state on the Modulino Pixels: one green LED for *ready*, all eight
+  amber for *notice*, every other LED red for *fault*.
+- Can play an optional Buzzer chime (1760 Hz for 120 ms, off by default) and
+  speak notices through the board's sound output (Piper voice via PipeWire).
+- Wakes the screen when something comes within 500 mm and dims it after
+  2 minutes idle. Screen and LED brightness follow the room's light level.
+- Applies Focus, mute, quiet hours (default 22:00–07:00), deduplication,
+  acknowledgement and expiry. These rules are deterministic code, not the
+  model.
+- Uses labeled demo fixtures by default. You can switch to a live calendar
+  (an ICS subscription link from Google Calendar, Outlook/Microsoft 365 or any
+  other https ICS feed) and a live Open-Meteo forecast for a location you
+  choose.
 
-Actual LLM generation and local Bluetooth speech are part of the target
-product. A factual fallback is required when generation fails, but it does not
-replace generation for final acceptance. The system must not invent source
-facts or silently use a cloud fallback.
+## How it solves the problem
 
-## Planned hardware
+| Problem | How the implementation addresses it |
+|---|---|
+| Facts are scattered across apps | `ContextEngine` merges calendar, weather, sensor and settings data into one evidence store with per-item quality and freshness ([`engine.py`](services/application/contextcue_app/engine.py)) |
+| Nobody connects the facts | Deterministic trigger rules and code-calculated facts (schedule totals, minutes until an event, umbrella and coat advice). The model only words what the code decided ([`engine.py`](services/application/contextcue_app/engine.py), [`schedule.py`](services/application/contextcue_app/schedule.py), [`rules.py`](services/application/contextcue_app/rules.py)) |
+| AI text can be wrong | `validate_response` checks the schema, the characters used, and that every number and time appears in the evidence. Rejected or late replies become a labeled factual fallback ([`recommendation.py`](services/application/contextcue_app/recommendation.py)) |
+| Reminders go unseen | Several channels: screen, Pixels, optional chime and speech. The screen wakes on approach. Routing follows the audio policy, Focus, mute and quiet hours ([`notifications.py`](services/application/contextcue_app/notifications.py)) |
+| Cloud and network failures | The model, voice, sensing, rules and storage all run on the board. Live sources report `stale` or `unavailable` and are never silently replaced with demo data ([`sources.py`](services/application/contextcue_app/sources.py)) |
+| Trust | Every notice shows its evidence. Simulated data is labeled at every stage. Missing values stay null and are never invented |
 
-The selected panel contains five Modulino modules plus the UNO Q touchscreen:
+## Main use cases
 
-| Module | Type | Intended responsibility |
+1. **Morning approach.** You sit down in the morning. The Distance sensor sees
+   you, the screen wakes and a briefing names your next event and the weather.
+2. **Leaving for a meeting.** An event starts in 22 minutes and the forecast
+   says 70% rain. A preparation notice tells you to bring an umbrella, and the
+   Pixels turn amber.
+3. **Room comfort.** The room stays above 26 °C for a minute. A comfort notice
+   suggests opening a window or using a fan.
+4. **Quick questions.** Tap **Ask** and choose one of the four questions, or
+   tap **Brief me**.
+5. **Focus and quiet hours.** Focus holds back the automatic morning
+   briefing until you leave Focus and stops automatic speech. Briefings and
+   answers you ask for still appear. Quiet hours keep audio silent.
+6. **Demo and testing.** Run the app on a laptop with a simulated gateway,
+   four fixture scenarios (*Morning briefing*, *Event with rain*, *Warm room*,
+   *Quiet hours*), a scenario clock and fault injection.
+
+## Hardware and tools
+
+### Hardware
+
+| Component | Role | Implementation details |
 |---|---|---|
-| Thermo | Sensor | Temperature and relative humidity for indoor comfort |
-| Light | Sensor | Ambient light level for screen and Pixel brightness |
-| Distance | Sensor | Time-of-flight distance for near-object wake |
-| Touchscreen | Linux input | Volume control, navigation, acknowledgement, and the active notice’s “Why” view |
-| Pixels | Output | Fixed ready, notice, fault, and off patterns |
-| Buzzer | Output | Optional, short, bounded attention tones |
+| **Arduino UNO Q** | Main board | The Linux side (4x Cortex-A53) runs the Python app, the UI server, the LLM container and speech. The STM32 MCU runs the Zephyr firmware. The two sides talk over Arduino Router Bridge RPC |
+| **Modulino Thermo** | Temperature (`degC`) and humidity (`%RH`) | Read at 1 Hz; stale after 5 s. HS300x (`0x44`) or SHT31 (`0x45`), detected by `Arduino_Modulino` |
+| **Modulino Light** | Ambient light (`lux`) | Read at 5 Hz; stale after 2 s. Drives screen brightness (20–100%) and Pixels brightness (5–40%). The LTR381 driver's divide-by-zero in darkness is trapped by `DivideByZeroTrap` |
+| **Modulino Distance** | Time-of-flight distance (`mm`) | Read at 10 Hz; stale after 2 s. VL53L4CD/VL53L4ED at `0x29`. Near at ≤500 mm, clear above 650 mm, with 500 ms persistence. Nothing in range means "clear"; a failed reading means "unknown" |
+| **Modulino Pixels** | Ambient status LEDs (8 RGB) | I²C `0x36`. Allowlisted patterns: `ready`, `notice`, `fault`, `off`. |
+| **Modulino Buzzer** | Optional chime | I²C `0x1E`. The MCU enforces 200–5000 Hz and at most 250 ms; the app sends 1760 Hz for 120 ms. Off by default |
+| **Waveshare 7" touchscreen** | Display and touch input | 1024x600 on DP-1, USB touch (`0eef:0005`), connected through a USB-C multiport dock. It has no Linux backlight control, so dimming is a CSS overlay |
+| **Speaker** | Spoken notices | Any PipeWire output: Bluetooth (A2DP), USB or the board's line-out |
+| **USB-C dock and mains charger** | Video, USB and power | Powering the dock from a laptop USB-C port reset the board under full LLM load; a mains charger fixed it ([`services/ai/README.md`](services/ai/README.md)) |
 
-The sensors report measurements only. They do not identify people or infer
-occupancy, sleep, attention, identity, or emotional state.
+All Modulinos share the Qwiic connector on the MCU's `Wire1` bus. The sensors
+report measurements only. Nothing infers identity, occupancy, sleep,
+attention or emotion.
 
-The planned sensor targets are:
+Board measurements are in
+[`services/peripherals/README.md`](services/peripherals/README.md). The
+assembly is drawn in
+[`docs/presentation/hardware-assembly.png`](docs/presentation/hardware-assembly.png).
 
-| Sensor | Unit | Target rate | Stale after |
-|---|---|---:|---:|
-| Thermo temperature | `degC` | 1 Hz | 5 seconds |
-| Thermo humidity | `%RH` | 1 Hz | 5 seconds |
-| Light | Verified lux or normalized level | 5 Hz | 2 seconds |
-| Distance | `mm` | 10 Hz | 2 seconds |
+### Software tools
 
-The initial proximity policy is near at `<=500 mm`, clear at `>650 mm`, with
-500 ms of valid persistence. Out-of-range distance is unknown, not “far away.”
+| Tool | Used for |
+|---|---|
+| **Arduino App Lab / `arduino-app-cli`** | Builds and flashes the sketch, runs the Python app and Bricks in containers ([`scripts/contextcue-app.sh`](scripts/contextcue-app.sh)) |
+| **`arduino-cli`** | Compiles the firmware locally with the pinned `unoq` profile (VS Code task) |
+| **SSH** | Deploys from a laptop and opens a UI tunnel on port 7300 ([`scripts/unoq.sh`](scripts/unoq.sh)) |
+| **Chromium (kiosk mode)** | Shows the UI full screen on the board, with an optional desktop autostart entry |
+| **OpenOCD over SWD** | Diagnosed the MCU halt caused by the Light driver ([`DivideByZeroTrap.h`](apps/contextcue-hardware/sketch/src/sensors/DivideByZeroTrap.h)) |
+| **VS Code tasks** | Run the tests, compile the firmware, deploy, view logs and stop the app ([`.vscode/tasks.json`](.vscode/tasks.json)) |
 
-## Architecture
+## System architecture
 
-The planned system is divided into product software and hardware software:
+```mermaid
+flowchart LR
+  subgraph MCU["UNO Q MCU (STM32, Zephyr, C++)"]
+    SC["SensorController<br/>Thermo 1 Hz · Light 5 Hz · Distance 10 Hz<br/>BusGuard · DivideByZeroTrap"]
+    PS["PublishedState<br/>mutex-protected snapshot, boot ID"]
+    OC["OutputController<br/>allowlist · bounds · TTL · 3 s lease"]
+    RPC["BridgeRpc<br/>cc_open · cc_read · cc_read_light<br/>cc_read_distance · cc_out · cc_lease<br/>cc_read_outputs"]
+    SC --> PS --> RPC
+    RPC --> OC
+  end
 
-```text
-UserInterface
-      |
-ContextEngine <-> RecommendationService
-      |                    |
-      v                    v
-NotificationService <-> DataRepository
-      |
-      v
-HardwareGateway <-> PeripheralAdapter
-      |
-      v
-Arduino Bridge
-      |
-      v
-MCU firmware
-  SensorController
-  OutputController
+  subgraph LNX["UNO Q Linux: ContextCue App Lab container (Python)"]
+    GW["HardwareGateway<br/>decode · freshness · reboot detection<br/>per-module health"]
+    APP["ContextCueApp<br/>100 ms control loop (asyncio)"]
+    CE["ContextEngine<br/>evidence · schedule facts · rules<br/>triggers · snapshots"]
+    RS["RecommendationService<br/>1 active + 1 waiting request<br/>60 s deadline · validator · fallback"]
+    NS["NotificationService<br/>priority · Focus · mute · quiet hours<br/>dedupe · expiry · output routing"]
+    DR[("DataRepository<br/>SQLite")]
+    SRC["Source adapters<br/>Fixture · IcsCalendar · OpenMeteo"]
+    SP["PiperSpeech<br/>Piper TTS → Speaker('pipewire')"]
+    UIS["UIServer<br/>GET /api/state · POST /api/action<br/>port 7000"]
+    GW <--> APP
+    APP --> CE
+    APP --> NS
+    CE --> RS
+    RS --> NS
+    SRC --> CE
+    NS --> SP
+    NS --> DR
+    APP --> DR
+    UIS <--> APP
+  end
+
+  subgraph BRICK["arduino:llm Brick (container)"]
+    LLM["llama.cpp server<br/>Qwen3.5-0.8B Q4_0, CPU<br/>OpenAI-compatible :9999/v1"]
+  end
+
+  subgraph EXT["Internet (optional)"]
+    OM["Open-Meteo<br/>forecast + geocoding"]
+    ICS["ICS calendar feed<br/>Google · Microsoft 365 · other"]
+    HF["Hugging Face<br/>Piper voice (one-time download)"]
+  end
+
+  subgraph DEV["Devices"]
+    MOD["Modulino Thermo · Light · Distance"]
+    OUT["Modulino Pixels · Buzzer"]
+    SCR["7-inch touchscreen<br/>Chromium kiosk"]
+    SPK["Speaker<br/>Bluetooth · USB · line-out"]
+  end
+
+  MOD -- "I²C (Qwiic, Wire1)" --> SC
+  OC -- "I²C" --> OUT
+  RPC <-->|"Arduino Router Bridge<br/>(MessagePack RPC, compact JSON)"| GW
+  RS -- "HTTP /chat/completions<br/>JSON schema" --> LLM
+  SRC -- "HTTPS" --> OM
+  SRC -- "HTTPS" --> ICS
+  SP -. "HTTPS, SHA-256 checked" .-> HF
+  SP --> SPK
+  SCR <-->|"HTTP polling every 500 ms"| UIS
 ```
 
-![ContextCue class diagram](docs/architecture/ContextCue_Class_Diagram.png)
+The same `ContextCueApp` can run with a `SimulatedGateway` instead of the real
+gateway (`--simulated`). It has the same interface and labels every sample
+`simulated`; the real app never falls back to it.
 
-The editable architecture source is
-[`docs/architecture/ContextCue_Class_Diagram.mmd`](docs/architecture/ContextCue_Class_Diagram.mmd). The detailed responsibilities are
-documented in
-[`docs/architecture/ContextCue_UML_Class_Reference.md`](docs/architecture/ContextCue_UML_Class_Reference.md).
+### Components
 
-### Main planned components
+| Component | Location | Responsibility |
+|---|---|---|
+| **SensorController** | [`sketch/src/sensors/`](apps/contextcue-hardware/sketch/src/sensors/) | Reads and validates the Modulino sensors, assigns sequence numbers, and reports failures as null values with named errors. `BusGuard`/`QwiicBus` stop one stuck I²C device from freezing the MCU |
+| **OutputController** | [`sketch/src/outputs/`](apps/contextcue-hardware/sketch/src/outputs/) | Validates and queues Pixels/Buzzer commands. Enforces the allowlist, bounds, TTL, session, duplicate IDs and the 3 s output lease, and turns outputs off when the lease lapses |
+| **BridgeRpc / PublishedState** | [`sketch/src/rpc/`](apps/contextcue-hardware/sketch/src/rpc/), [`sketch/src/state/`](apps/contextcue-hardware/sketch/src/state/) | `Bridge.provide_safe` handlers that serve a mutex-protected copy of the readings (responses of 224 bytes at most) |
+| **HardwareGateway** | [`contextcue_hardware/gateway.py`](apps/contextcue-hardware/python/contextcue_hardware/gateway.py) | Runs bounded RPCs in worker threads, decodes strictly, maps MCU age to UTC timestamps, detects MCU reboots, and keeps Bridge, sensor and output health separate |
+| **Contracts** | [`contextcue_contracts/`](apps/contextcue-hardware/python/contextcue_contracts/) | Shared types (`SensorSample`, `GatewayState`, `HealthState`, `DeviceCommand`, `CommandResult`) and freshness limits |
+| **ContextCueApp** | [`app.py`](services/application/contextcue_app/app.py) | Wires the services together, runs the control loop, the output-lease heartbeat and data retention, and exposes the view model and UI actions |
+| **ContextEngine** | [`engine.py`](services/application/contextcue_app/engine.py) | Evidence store with revisions, freshness, schedule facts, comfort and proximity rules, triggers, advice and immutable snapshots |
+| **RecommendationService** | [`recommendation.py`](services/application/contextcue_app/recommendation.py) | Bounded async queue, `LlamaCppModel` client, response validation and the factual fallback |
+| **NotificationService** | [`notifications.py`](services/application/contextcue_app/notifications.py) | Notice lifecycle (candidate → generating → active → acknowledged/expired), priority, policies, and routing to the screen, Pixels, Buzzer and speech |
+| **DataRepository** | [`repository.py`](services/application/contextcue_app/repository.py) | SQLite storage for settings, evidence, notices, acknowledgement tombstones, diagnostics and secrets. Keeps 7 days of data and redacts secret-like keys in diagnostics |
+| **Source adapters** | [`sources.py`](services/application/contextcue_app/sources.py), [`calendar_ics.py`](services/application/contextcue_app/calendar_ics.py), [`weather.py`](services/application/contextcue_app/weather.py) | Fixture, ICS calendar and Open-Meteo adapters behind one `SourceAdapter` contract. Network fetches run in background threads |
+| **PiperSpeech** | [`speech.py`](services/application/contextcue_app/speech.py) | Downloads and checks the pinned voice, then synthesises and plays speech in worker threads. Stop takes effect within about 0.1 s |
+| **Sun** | [`sun.py`](services/application/contextcue_app/sun.py) | Offline sunrise and sunset calculation for the UI's sky |
+| **UIServer and assets** | [`services/ui/`](services/ui/) | Standard-library HTTP server; plain HTML/CSS/JS with no build step and no network resources |
 
-- **UserInterface** — Shows the dashboard, briefing, evidence explanation,
-  settings, health, and simulation views.
-- **ContextEngine** — Combines fixtures, sensor readings, settings, schedule
-  calculations, freshness, and trigger rules into immutable context snapshots.
-- **RecommendationService** — Runs bounded asynchronous model generation,
-  validates evidence references, rejects obsolete results, and creates labeled
-  factual fallbacks.
-- **NotificationService** — Selects the highest-priority notice and applies
-  mute, Focus, quiet-hours, expiration, acknowledgement, and output policy.
-- **DataRepository** — Persists settings, evidence, acknowledgements,
-  diagnostics, and retention-managed history.
-- **Simulator** — Supplies labeled fixtures, virtual time, and controlled
-  device/model failures using the same contracts as production.
-- **HardwareGateway** — Owns discovery, sensor data, bounded commands, health,
-  and safe Bridge recovery.
-- **PeripheralAdapter** — Integrates the Linux display, touch input, and
-  Bluetooth audio endpoint.
-- **SensorController** — Reads and validates Thermo, Light, and Distance on
-  the MCU.
-- **OutputController** — Applies allowlisted Pixel and Buzzer commands and
-  turns outputs off when the application lease expires.
+The class-level design is in
+[`docs/architecture/ContextCue_Class_Diagram.mmd`](docs/architecture/ContextCue_Class_Diagram.mmd)
+and
+[`ContextCue_UML_Class_Reference.md`](docs/architecture/ContextCue_UML_Class_Reference.md).
 
-## Current implementation
+## Data flow
 
-The hardware sensing milestones currently implement:
+```mermaid
+flowchart TD
+  U(["User"])
 
-```text
-Modulino Thermo, Light, and Distance
-  -> UNO Q MCU SensorController
-  -> Arduino Router Bridge
-  -> Linux HardwareGateway
-  -> JSON Lines console
+  subgraph IN["Inputs"]
+    S["Modulino sensors<br/>temperature · humidity · lux · distance"]
+    CAL["Calendar<br/>fixture or ICS link"]
+    WX["Weather<br/>fixture or Open-Meteo"]
+    SET["Settings<br/>ranges · windows · policies · location"]
+  end
+
+  S -- "I²C samples, seq, MCU uptime" --> MCU["MCU PublishedState"]
+  MCU -- "Bridge RPC JSON<br/>(polled every 100 ms)" --> GW["HardwareGateway<br/>SensorSample + HealthState"]
+  GW -- "GatewayState" --> EV["ContextEngine evidence<br/>value · unit · observed_at · valid_until<br/>quality · source_mode · revision"]
+  CAL -- "CalendarEvent[] (refresh 10 min)" --> EV
+  WX -- "WeatherPeriod[] (3 h periods, refresh 30 min)" --> EV
+  SET --> EV
+
+  EV --> TR{"Trigger rules<br/>morning · preparation · comfort"}
+  U -- "touch: Brief me / Ask" --> UI["Kiosk UI"]
+  UI -- "POST /api/action" --> TR
+  TR -- "TriggerSpec" --> NS["NotificationService<br/>candidate notice"]
+  NS -- "ContextSnapshot<br/>(evidence + code-calculated facts)" --> RS["RecommendationService"]
+  RS -- "compact model view" --> LLM["On-board LLM"]
+  LLM -- "{text}" --> VAL{"validate_response"}
+  VAL -- "passed" --> NS
+  VAL -- "rejected / timed out / error" --> FB["factual_fallback<br/>(from current evidence)"] --> NS
+
+  NS -- "view model (GET /api/state)" --> UI --> U
+  NS -- "DeviceCommand: pattern, tone<br/>(cc_out) + lease (cc_lease)" --> GW2["HardwareGateway"] --> OUT["Pixels · Buzzer"] --> U
+  NS -- "text (if policy allows)" --> SP["PiperSpeech"] --> SPK["Speaker"] --> U
+  U -- "Done / Mute / Focus / Settings" --> UI
+
+  NS <--> DB[("SQLite<br/>settings · evidence · notices<br/>tombstones · diagnostics · calendar link")]
+  EV -- "every 30 s" --> DB
 ```
 
-The current firmware:
+Notes on the flow:
 
-- Reads temperature and humidity (Thermo, 1 Hz), ambient light (Light, 5 Hz),
-  and time-of-flight distance (Distance, 10 Hz) from real Modulino modules.
-- Uses `Wire1` for the Qwiic bus.
-- Detects the supported Thermo driver through `Arduino_Modulino`.
-- Validates finite values and accepted ranges for every metric.
-- Assigns a sequence number to every acquisition attempt.
-- Records MCU uptime and a boot identity.
-- Reports failed readings as null values with named errors.
-- Serves compact `cc_open`, `cc_read`, `cc_read_light`, and
-  `cc_read_distance` Bridge RPC responses.
+- **Freshness comes from the source's own timestamps.** Polling a sample
+  again does not refresh its age. A new MCU boot ID invalidates the old
+  samples. Restored evidence is never treated as fresh.
+- **The model sees a compact view only.** The validator checks the reply
+  against the full snapshot. A reply that cites evidence which changed in
+  the meantime is rejected as obsolete.
+- **Secrets stay on the Linux side.** The calendar link is stored as a secret.
+  It is never returned to the UI or logged; only its host is shown. The MCU
+  receives no account or calendar data.
+- **Late results cannot revive notices.** Generation and playback callbacks
+  recheck the notice lifecycle, so an acknowledged or expired notice stays
+  ended.
 
-The current Python gateway:
+## Technologies
 
-- Connects through the official Arduino Router Bridge client.
-- Validates compact JSON responses and schema versions.
-- Maps MCU observation age to Linux timestamps.
-- Preserves observation and receipt times.
-- Rejects malformed, stale-looking, regressed, or contradictory data.
-- Detects Bridge failure and MCU reboot.
-- Keeps sensor health separate from Bridge health.
-- Runs blocking Bridge calls in worker threads.
-- Never substitutes simulated or fabricated sensor values at runtime.
+**Platforms and runtimes**
+- Arduino UNO Q: Linux processor and STM32 MCU
+- Arduino Zephyr core `arduino:zephyr` 1.0.0 (FQBN `arduino:zephyr:unoq`)
+- Arduino App Lab and `arduino-app-cli`: app containers and Bricks
+- Python ≥ 3.10 (`asyncio`, `sqlite3`, `http.server`, `urllib`, `zoneinfo`)
+- Debian XFCE desktop on the board, with Chromium in kiosk mode, PipeWire and
+  BlueZ ([peripherals notes](services/peripherals/README.md))
 
-Thermo, Light, and Distance are configured and independently advertised
-through the Linux gateway. Each module has separate decoding, freshness,
-sequence/uptime validation, and health state; a failed module does not hide
-valid readings from the others. Pixels, Buzzer, display/touch, Bluetooth,
-model generation, persistence, notification policy, and the full UI remain
-future work.
+**Firmware libraries** (pinned in [`sketch.yaml`](apps/contextcue-hardware/sketch/sketch.yaml))
+- `Arduino_RouterBridge` 0.4.4, `Arduino_RPClite` 0.3.1, `MsgPack` 0.4.2
+- `Arduino_Modulino` 0.10.0 and its drivers: `Arduino_HS300x`, `SHT31`,
+  `Arduino_LTR381RGB`, `STM32duino VL53L4CD`/`VL53L4ED` and others listed in
+  the profile
 
-## Calendar and weather sources
+**Python packages** (pinned in [`apps/contextcue/python/requirements.txt`](apps/contextcue/python/requirements.txt))
+- `arduino-router-bridge` 0.5.1: Bridge client
+- `icalendar` 7.3.0 and `recurring-ical-events` 3.8.2: ICS parsing and
+  recurrence expansion
+- `piper-tts` 1.8.0 and `onnxruntime` 1.31.1: offline text to speech
+- `arduino.app_peripherals.speaker`, provided by the App Lab runtime:
+  PipeWire audio output
 
-ContextCue supports two source modes through common application contracts:
+**AI**
+- `arduino:llm` Brick: llama.cpp server with **Qwen3.5-0.8B Q4_0**, CPU only,
+  4096-token context, one slot, prompt cache off
+  ([`apps/contextcue/app.yaml`](apps/contextcue/app.yaml))
+- OpenAI-compatible Chat Completions API with `response_format: json_schema`
+  and greedy decoding
+- Piper voice `en_US-lessac-medium` (ONNX), from `rhasspy/piper-voices`
+  v1.0.0 and pinned by SHA-256
 
-- **Fixed/demo fixtures** for offline development, repeatable tests, controlled
-  failures, and the Qualcomm demonstration.
-- **Live providers** for normal use when the user explicitly connects them.
+**External APIs** (optional, Linux side only)
+- Open-Meteo Forecast API and Geocoding API. No key needed; the UI shows the
+  attribution "Weather data by Open-Meteo.com"
+- iCalendar (RFC 5545) subscription feeds over HTTPS (`webcal://` is accepted)
 
-The initial live calendar providers are:
+**Protocols and formats**
+- I²C over Qwiic (`Wire1`)
+- Arduino Router Bridge RPC (MessagePack) carrying compact JSON
+- HTTP/JSON between the kiosk and the app; HTTP to the LLM server; HTTPS to
+  the external APIs
+- Unix socket `unix:///var/run/arduino-router.sock` (Router)
+- JSON Lines (hardware console output and benchmark output)
 
-- Google Calendar
-- Microsoft 365 / Outlook Calendar
+**UI**
+- Plain HTML, CSS and JavaScript with no framework and no build step
+- Lucide icons (ISC) and the Inter font (OFL), both bundled locally
 
-The planned authentication flow uses Clerk for application identity and
-provider OAuth connections. Clerk handles sign-in and authorization; separate
-`GoogleCalendarAdapter` and `Microsoft365CalendarAdapter` components call the
-provider APIs and translate results into the shared ContextCue calendar
-contract.
-
-Calendar setup is optional during onboarding. Users can continue with
-fixed/demo sources, or choose **Connect Google Calendar** or **Connect
-Microsoft 365**. Provider tokens and secrets remain backend-only, and the
-application continues to work when no live calendar is connected.
-
-Weather providers use the same adapter pattern. **Open-Meteo is the selected
-initial live weather provider** because it is simple to integrate and does not
-require an application API key for the intended prototype use. The project
-will still verify coverage, usage terms, attribution requirements, freshness,
-and failure behavior before production deployment. `FixtureWeatherAdapter`
-remains available for the Qualcomm demonstration and repeatable tests.
-
-Every adapter must report source identity, real/simulated mode, observation
-time, freshness, validity, and errors. Live failures must never silently
-become simulated values.
-
-## UNO Q execution boundary
-
-Calendar and weather integration belongs on the UNO Q's Linux side, not on the
-microcontroller:
-
-```text
-UNO Q Linux
-  -> Clerk/OAuth
-  -> Google Calendar and Microsoft Graph calls
-  -> Calendar/weather adapters
-  -> caching and freshness
-  -> ContextEngine and local model worker
-
-UNO Q MCU
-  -> Thermo, Light, and Distance sensors
-  -> touchscreen
-  -> Pixels and Buzzer
-  -> bounded real-time hardware control
-```
-
-The physical Knob is not part of the selected hardware. Speech volume is
-adjusted through the touchscreen and applied by the Linux audio layer to the
-selected Bluetooth speaker or headphones. The touchscreen also provides the
-Why-view action that was previously assigned to a Knob press.
-
-The Linux side can perform network calls, OAuth, token handling, event
-normalization, time-zone conversion, caching, and offline recovery. The MCU
-must not receive account credentials or calendar data; it should remain focused
-on real-time hardware acquisition and bounded output commands.
+**Testing and tooling**
+- `unittest` (215 tests), `g++` for host-compiled firmware tests with
+  Arduino/Zephyr stubs, `node --test` for UI logic (optional)
+- `arduino-cli`, Bash deploy scripts, VS Code tasks, OpenOCD
 
 ## Repository map
 
-Folders follow Arduino App Lab conventions: every folder under `apps/` is a
-complete, self-contained App Lab app (named in kebab-case after its
-`app.yaml` name, like Arduino's official examples), so you can copy it
-straight into App Lab. `services/` holds the planned components that have no
-code yet. When a second app needs the contracts, they become a
-pip-installable package listed in each app's `requirements.txt` (the same way
-Arduino ships its bricks).
+Folders under `apps/` follow Arduino App Lab conventions and are named in
+kebab-case after their `app.yaml` name. `contextcue-hardware` and
+`llm-benchmark` are self-contained and can be copied straight into App Lab.
+`contextcue` is a template: App Lab mounts only an app's own folder, so
+`scripts/contextcue-app.sh` assembles it with the code it needs from
+`services/` and `contextcue-hardware`.
 
 ```text
 apps/
-  contextcue-hardware/   App Lab app: HardwareGateway (Linux) + SensorController (MCU)
-    app.yaml  python/  sketch/
-services/                SWE components (application and ui implemented, rest planned)
-  application/           ContextEngine, NotificationService, DataRepository (implemented)
-  ai/                    RecommendationService / LLM worker
-  ui/                    UserInterface kiosk + app entry point (implemented)
-  peripherals/           PeripheralAdapter: display, touch, Bluetooth
-  simulator/             Simulator and labeled fixtures
-tests/hardware/          Gateway and firmware regression tests for contextcue-hardware
-tests/application/       Application policy, persistence and end-to-end scenario tests
-tests/ui/                UI server contract tests
-docs/                    Architecture, requirements, background, planning
+  contextcue/            Full app template (application + UI + sensors + LLM Brick)
+  contextcue-hardware/   Sensing app: HardwareGateway (Linux) + firmware (MCU)
+    python/              contextcue_hardware, contextcue_contracts, console entry point
+    sketch/              Firmware: sensors/, outputs/, rpc/, state/, Config.h
+  llm-benchmark/         G1 on-board LLM benchmark
+services/
+  application/           ContextCueApp, ContextEngine, RecommendationService,
+                         NotificationService, DataRepository, adapters, speech, fixtures
+  ui/                    Kiosk UI server, assets and entry point (main.py)
+  ai/                    AI notes and measured results (code is in application/)
+  peripherals/           Board display, touch and audio findings (no code)
+  simulator/             Simulator notes (simulation lives in application/: SimulatedGateway,
+                         fixtures, ScenarioClock)
+scripts/                 contextcue-app.sh (build/run on the board), unoq.sh (deploy over SSH),
+                         ai-eval.py (prompt evaluation)
+experiments/             gpu/ (E1: GPU acceleration, failed), thinking/ (Qwen thinking mode)
+tests/                   application/, hardware/ (gateway + host-compiled firmware), ui/, llm_benchmark/
+docs/                    requirements/, architecture/, planning/, background/, presentation/
 ```
 
-| Location | Responsibility |
-|---|---|
-| [`apps/contextcue-hardware/sketch/sketch.ino`](apps/contextcue-hardware/sketch/sketch.ino) | Firmware `setup()`/`loop()` |
-| [`apps/contextcue-hardware/sketch/src/sensors/`](apps/contextcue-hardware/sketch/src/sensors/) | `SensorController` acquisition and validation for Thermo, Light, and Distance |
-| [`apps/contextcue-hardware/sketch/src/state/`](apps/contextcue-hardware/sketch/src/state/) | Mutex-protected published readings and boot identity |
-| [`apps/contextcue-hardware/sketch/src/rpc/`](apps/contextcue-hardware/sketch/src/rpc/) | Bridge RPC handlers and compact JSON serialization |
-| [`apps/contextcue-hardware/sketch/src/Config.h`](apps/contextcue-hardware/sketch/src/Config.h) | Firmware, library, timing, and response-size constants |
-| [`apps/contextcue-hardware/sketch/sketch.yaml`](apps/contextcue-hardware/sketch/sketch.yaml) | Pinned UNO Q core and Arduino libraries |
-| [`apps/contextcue-hardware/python/contextcue_hardware/gateway.py`](apps/contextcue-hardware/python/contextcue_hardware/gateway.py) | Async hardware gateway, decoding, time mapping, and recovery |
-| [`apps/contextcue-hardware/python/contextcue_hardware/transport.py`](apps/contextcue-hardware/python/contextcue_hardware/transport.py) | Arduino Router Bridge connection |
-| [`apps/contextcue-hardware/python/contextcue_hardware/cli.py`](apps/contextcue-hardware/python/contextcue_hardware/cli.py) | Console startup, polling, JSON output, and shutdown |
-| [`apps/contextcue-hardware/python/main.py`](apps/contextcue-hardware/python/main.py) | Arduino App Lab Python entry point |
-| [`apps/contextcue-hardware/python/contextcue_contracts/`](apps/contextcue-hardware/python/contextcue_contracts/) | Application-facing sensor, capability, health, and freshness contracts |
-| [`tests/hardware/`](tests/hardware/) | Gateway contract/fault tests and host-compiled firmware tests |
-| [`docs/planning/IMPLEMENTATION_PLAN.md`](docs/planning/IMPLEMENTATION_PLAN.md) | Phased plan for the remaining modules |
-| [`docs/`](docs/) | Requirements, architecture, and project reference documents |
+## Running it
 
-## Safety and data rules
+Python 3.10 or newer. The core app and the tests use only the standard
+library. Live calendar parsing and speech need the packages in
+[`apps/contextcue/python/requirements.txt`](apps/contextcue/python/requirements.txt).
 
-The intended system treats hardware and model output as untrusted until
-validated:
-
-- Missing values are null, never fabricated.
-- Zero is distinct from unavailable.
-- Sensor quality and Bridge health are separate.
-- Observation timestamps are not refreshed by duplicate polling.
-- A new MCU boot invalidates the previous boot's sample identity.
-- Model output must reference current evidence and pass schema and fact checks.
-- Late model or audio callbacks must be cancellable and must not revive expired
-  or acknowledged notices.
-- MCU output commands are allowlisted, bounded, expiring, and session-scoped.
-- A three-second output lease turns off Pixels and the Buzzer if Linux stops
-  renewing it.
-- Local buzzer stop cannot independently stop Linux Bluetooth playback.
-- Restart must not resume old audio or replay old hardware commands.
-
-## Development
-
-Python 3.10 or newer is required. The current gateway tests use only the
-standard library:
+### Laptop (simulated sensors)
 
 ```bash
 python3 -m unittest discover -s tests -v
-python3 apps/contextcue-hardware/python/main.py --help
-python3 services/ui/main.py --simulated   # app + kiosk UI on http://127.0.0.1:7000
+python3 services/ui/main.py --simulated          # http://127.0.0.1:7000
+python3 services/ui/main.py --simulated --scenario-clock --scenario event_rain
 ```
 
-VS Code's **Run Task** menu includes:
+Options: `--scenario morning|event_rain|comfort|quiet_hours`,
+`--scenario-clock` (dated demo times and time jumps), `--db PATH` (default
+`~/.contextcue/contextcue.db`), `--model-url` / `--model-name` (any
+OpenAI-compatible server), `--voice-dir` (enable Piper), `--host`, `--port`.
+Without `--model-url`, every notice uses the labeled factual fallback.
 
-- **ContextCue: test gateway**
-- **ContextCue: compile UNO Q firmware**
+### UNO Q (real sensors, LLM and speech)
 
-The compile task requires `arduino-cli` on `PATH` and downloads pinned
-dependencies on its first invocation. It compiles but does not upload firmware.
-
-An optional editable install exposes the console command:
+On the board, from a clone kept outside `~/ArduinoApps`:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install --no-build-isolation -e .
-contextcue-hardware --help
+git pull
+scripts/contextcue-app.sh run              # build ~/ArduinoApps/contextcue, flash, start
+scripts/contextcue-app.sh kiosk            # show the UI full screen on the board display
+scripts/contextcue-app.sh autostart on     # start the app and kiosk at every boot
+scripts/contextcue-app.sh calendar-link    # paste an ICS link (not echoed)
+scripts/contextcue-app.sh logs | stop | status | url
 ```
 
-The console requires the real Arduino Router and Python Bridge dependency on
-the UNO Q Linux side. On an ordinary laptop it reports unavailable hardware;
-there is no automatic simulator or fabricated sensor fallback.
+From a laptop, deploying the working tree (uncommitted changes included):
 
-For board setup and recovery details, read the
+```bash
+scripts/unoq.sh ui-run            # build, copy, flash, start
+scripts/unoq.sh ui-open           # SSH tunnel; open http://localhost:7300
+scripts/unoq.sh ui-logs | ui-stop | ui-kiosk
+```
+
+`scripts/unoq.sh` needs an SSH host alias (default `unoq`) that logs in with a
+key. See [`apps/contextcue/README.md`](apps/contextcue/README.md) for what a
+build contains. Only one App Lab app runs at a time.
+
+### Hardware-only app and firmware
+
+```bash
+python3 apps/contextcue-hardware/python/main.py --help
+arduino-cli compile --profile unoq apps/contextcue-hardware/sketch   # compile only
+scripts/unoq.sh run                                                  # deploy the sensing app
+```
+
+An optional editable install exposes the `contextcue-hardware` console
+command (`python3 -m pip install --no-build-isolation -e .`). On an ordinary
+laptop the hardware console reports unavailable hardware; it never fabricates
+sensor values. Board setup, the wire protocol and Bridge failure reasons
+(`mcu_unresponsive`, `router_unavailable`, `gateway_stopped`) are in the
 [hardware bring-up guide](apps/contextcue-hardware/README.md).
 
-## Implementation roadmap
+## Safety and data rules
 
-The recommended order is:
-
-1. Define shared multi-module contracts.
-2. Refactor the MCU `SensorController`.
-3. Implement and calibrate Light.
-4. Implement and calibrate Distance.
-5. Extend the Bridge protocol for multiple sensors.
-6. Extend Python gateway decoding and per-module health.
-7. Implement `OutputController`, bounded commands, and the output lease.
-8. Implement `ContextEngine` and deterministic trigger policy.
-9. Implement `NotificationService`, persistence, and output routing.
-10. Add the Linux display, touch, and Bluetooth adapter.
-11. Add the UI, model worker, simulation, and full acceptance tests.
-
-The detailed work breakdown is in
-[`docs/planning/IMPLEMENTATION_PLAN.md`](docs/planning/IMPLEMENTATION_PLAN.md).
-
-## Reference documents
-
-- [`docs/requirements/ContextCue_Software_Baseline_v1.md`](docs/requirements/ContextCue_Software_Baseline_v1.md) — product requirements, policies, interfaces, failure behavior, and acceptance gates.
-- [`docs/architecture/ContextCue_UML_Class_Reference.md`](docs/architecture/ContextCue_UML_Class_Reference.md) — responsibilities and operations for the planned classes.
-- [`docs/architecture/ContextCue_Class_Diagram.png`](docs/architecture/ContextCue_Class_Diagram.png) — rendered system architecture.
-- [`docs/background/ContextCue_Problem_Solution_and_Simulation_Strategy.docx`](docs/background/ContextCue_Problem_Solution_and_Simulation_Strategy.docx) — problem, solution, and simulation background.
-- [`docs/background/ContextCue_Prototype_Build_Demo_and_User_Experience_Plan.docx`](docs/background/ContextCue_Prototype_Build_Demo_and_User_Experience_Plan.docx) — prototype build, demo, and user experience plan.
-- [`docs/planning/CONFLICT_RESOLUTION_REVIEW.md`](docs/planning/CONFLICT_RESOLUTION_REVIEW.md) — resolved differences between source documents.
-
-## Scope note
-
-This repository is an engineering foundation, not a claim that the complete
-product is finished. Physical board behavior, calibration, model performance,
-Bluetooth playback, UI acceptance, and end-to-end timing still require direct
-measurement and validation on the assembled device.
+- Missing values are null and never fabricated. Zero is distinct from
+  unavailable.
+- Sensor quality and Bridge health are reported separately. A failed module
+  does not hide valid readings from the others.
+- Observation timestamps are not refreshed by repeated polling. A new MCU boot
+  invalidates the previous boot's samples.
+- Simulated data is labeled from the source to the screen. Live sources never
+  fall back to fixtures, and there is no cloud model fallback.
+- Model output must pass the schema, character, number and time checks, and
+  the factual fallback is labeled as such.
+- MCU output commands are allowlisted, bounded, expiring and session-scoped.
+  The MCU enforces this independently of Linux. If Linux stops renewing the
+  3-second lease, Pixels and Buzzer turn off.
+- Buzzer tones are never replayed after a reconnect, and a restart does not
+  resume old audio.
