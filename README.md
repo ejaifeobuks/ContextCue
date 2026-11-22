@@ -83,6 +83,43 @@ section 2.)
    four fixture scenarios (*Morning briefing*, *Event with rain*, *Warm room*,
    *Quiet hours*), a scenario clock and fault injection.
 
+## What it looks like
+
+### On the UNO Q
+
+Captured from the running app on the board on 22 November 2026, at the
+touchscreen's 1024x600 resolution. The sensors, forecast, AI model and speech
+are real. The calendar is the fictional demo calendar, so those cards say
+**Simulated**.
+
+<table>
+<tr>
+<td width="50%"><img src="docs/presentation/screenshots/board/01-ai-answer.png" alt="<b>An AI answer.</b> Asked "How is the room?", the on-board model answered from the real Thermo readings; the reply passed validation and is labelled <i>AI generated</i>."><br><sub><b>An AI answer.</b> Asked "How is the room?", the on-board model answered from the real Thermo readings; the reply passed validation and is labelled <i>AI generated</i>.</sub></td>
+<td width="50%"><img src="docs/presentation/screenshots/board/02-why-this.png" alt="<b>Why this?</b> The readings and comfort ranges behind the answer, each marked Real and Current, and which model wrote the text."><br><sub><b>Why this?</b> The readings and comfort ranges behind the answer, each marked Real and Current, and which model wrote the text.</sub></td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/presentation/screenshots/board/03-live-sensors.png" alt="<b>Live sensors.</b> Real temperature, humidity, light and distance. The briefing beside it is the factual fallback: the validator rejected the model's reply."><br><sub><b>Live sensors.</b> Real temperature, humidity, light and distance. The briefing beside it is the factual fallback: the validator rejected the model's reply.</sub></td>
+<td width="50%"><img src="docs/presentation/screenshots/board/04-device-status.png" alt="<b>Device status.</b> Bridge, Thermo, Light, Distance, Pixels and Buzzer all report Ready."><br><sub><b>Device status.</b> Bridge, Thermo, Light, Distance, Pixels and Buzzer all report Ready.</sub></td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/presentation/screenshots/board/05-calendar-weather.png" alt="<b>Calendar &amp; Weather.</b> Live Open-Meteo forecast; the calendar link is stored on the board and only its host is shown."><br><sub><b>Calendar &amp; Weather.</b> Live Open-Meteo forecast; the calendar link is stored on the board and only its host is shown.</sub></td>
+<td width="50%"><img src="docs/presentation/screenshots/board/06-sound.png" alt="<b>Sound.</b> Piper speech through the board's PipeWire output, with mute and volume."><br><sub><b>Sound.</b> Piper speech through the board's PipeWire output, with mute and volume.</sub></td>
+</tr>
+</table>
+
+### Demo scenarios (simulated)
+
+Captured on a laptop with the simulated gateway and a scenario clock, to show
+situations that are hard to stage on demand. Without the model, notices use
+the labelled factual fallback.
+
+<table>
+<tr>
+<td width="50%"><img src="docs/presentation/screenshots/02-glance-notice.png" alt="<b>A preparation notice.</b> An event in 22 minutes with 70% rain, so it says to bring an umbrella."><br><sub><b>A preparation notice.</b> An event in 22 minutes with 70% rain, so it says to bring an umbrella.</sub></td>
+<td width="50%"><img src="docs/presentation/screenshots/08-night-quiet-hours.png" alt="<b>Night.</b> The sky follows the time of day, and an expired forecast is labelled instead of shown."><br><sub><b>Night.</b> The sky follows the time of day, and an expired forecast is labelled instead of shown.</sub></td>
+</tr>
+</table>
+
 ## Hardware and tools
 
 ### Hardware
@@ -104,9 +141,11 @@ report measurements only. Nothing infers identity, occupancy, sleep,
 attention or emotion.
 
 Board measurements are in
-[`services/peripherals/README.md`](services/peripherals/README.md). The
-assembly is drawn in
-[`docs/presentation/hardware-assembly.png`](docs/presentation/hardware-assembly.png).
+[`services/peripherals/README.md`](services/peripherals/README.md).
+
+![How the prototype is assembled: Modulinos on the Qwiic bus, the UNO Q, the USB-C dock, touchscreen and speaker](docs/presentation/hardware-assembly.png)
+
+*Simplified assembly drawing, not an electrical schematic.*
 
 ### Software tools
 
