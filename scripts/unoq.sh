@@ -8,8 +8,18 @@
 #   scripts/unoq.sh status   list running apps
 #   scripts/unoq.sh agent    start the SSH agent if needed and unlock the key
 #
+# Full ContextCue app (application + kiosk UI + real sensors), built from this
+# working tree with scripts/contextcue-app.sh, uncommitted changes included:
+#   scripts/unoq.sh ui-run     build, copy to the board, flash, start
+#   scripts/unoq.sh ui-deploy  build and copy only
+#   scripts/unoq.sh ui-open    SSH tunnel to the UI: open http://localhost:7300
+#   scripts/unoq.sh ui-kiosk   show the UI full screen on the board's display
+#   scripts/unoq.sh ui-logs    follow the app's Python logs (saved to logs/)
+#   scripts/unoq.sh ui-stop    stop the app
+#
 # Needs an SSH host alias (default "unoq") that logs in without a password.
-# Override with UNOQ_HOST=... and UNOQ_APP_DIR=... (relative to the board home).
+# Override with UNOQ_HOST=..., UNOQ_APP_DIR=... / UNOQ_UI_APP_DIR=... (relative
+# to the board home) and UNOQ_UI_PORT=... (local tunnel port).
 set -euo pipefail
 
 HOST="${UNOQ_HOST:-unoq}"
@@ -19,6 +29,8 @@ APP_NAME="${UNOQ_APP_NAME:-ContextCue Hardware (dev)}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCAL_APP="$ROOT/apps/contextcue-hardware"
 SSH=(ssh -o BatchMode=yes "$HOST")
+REMOTE_UI_APP="${UNOQ_UI_APP_DIR:-ArduinoApps/contextcue}"
+UI_LOCAL_PORT="${UNOQ_UI_PORT:-7300}"
 
 AGENT_SOCK="$HOME/.ssh/agent.sock"
 
@@ -62,7 +74,64 @@ deploy() {
   echo "Deployed $(git -C "$ROOT" rev-parse --short HEAD)$(git -C "$ROOT" diff --quiet -- "$LOCAL_APP" || echo '+uncommitted') to $HOST:~/$REMOTE_APP"
 }
 
+ui_deploy() {
+  local stage
+  stage="$(mktemp -d)"
+  "$ROOT/scripts/contextcue-app.sh" build "$stage/contextcue" >/dev/null
+  # Replace only the files a build owns; keep data/ (settings) and .cache/.
+  tar -C "$stage/contextcue" -czf - app.yaml README.md python sketch |
+    "${SSH[@]}" "set -e; mkdir -p ~/$REMOTE_UI_APP; cd ~/$REMOTE_UI_APP;
+                 if [ -f app.yaml ] && ! grep -qx 'name: ContextCue' app.yaml; then
+                   echo '~/$REMOTE_UI_APP is not a ContextCue app' >&2; exit 1; fi
+                 rm -rf app.yaml README.md python sketch; tar -xzf -"
+  echo "Deployed ContextCue ($(cat "$stage/contextcue/python/build_info.txt")) to $HOST:~/$REMOTE_UI_APP"
+  rm -rf "$stage"
+}
+
+ui_address() {  # the app container's IP; App Lab does not publish its port
+  "${SSH[@]}" "docker ps -q --filter label=cc.arduino.app.main=true \
+      --filter label=cc.arduino.app.path=\$HOME/$REMOTE_UI_APP | head -n 1 |
+    xargs -r docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'"
+}
+
 case "${1:-}" in
+  ui-deploy)
+    check_connection
+    ui_deploy
+    ;;
+  ui-run)
+    check_connection
+    ui_deploy
+    # Stop, then start: `app restart` can leave the app marked failed.
+    "${SSH[@]}" "arduino-app-cli app stop ~/$REMOTE_UI_APP >/dev/null 2>&1 || true;
+                 arduino-app-cli app start ~/$REMOTE_UI_APP"
+    ;;
+  ui-stop)
+    check_connection
+    "${SSH[@]}" "arduino-app-cli app stop ~/$REMOTE_UI_APP"
+    ;;
+  ui-logs)
+    check_connection
+    mkdir -p "$ROOT/logs"
+    log="$ROOT/logs/contextcue-$(date -u +%Y%m%dT%H%M%SZ).log"
+    echo "Saving to ${log#"$ROOT"/} (Ctrl+C to stop)" >&2
+    "${SSH[@]}" "arduino-app-cli app logs ~/$REMOTE_UI_APP --follow" | tee "$log"
+    ;;
+  ui-open)
+    check_connection
+    address="$(ui_address)"
+    [ -n "$address" ] || { echo "ContextCue is not running; start it with: scripts/unoq.sh ui-run" >&2; exit 1; }
+    echo "ContextCue UI: http://localhost:$UI_LOCAL_PORT (Ctrl+C closes the tunnel)" >&2
+    exec ssh -N -L "$UI_LOCAL_PORT:$address:7000" "$HOST"
+    ;;
+  ui-kiosk)
+    check_connection
+    address="$(ui_address)"
+    [ -n "$address" ] || { echo "ContextCue is not running; start it with: scripts/unoq.sh ui-run" >&2; exit 1; }
+    "${SSH[@]}" "DISPLAY=:0 nohup chromium --kiosk --noerrdialogs --disable-infobars \
+                 http://$address:7000 >/dev/null 2>&1 &"
+    echo "Opened http://$address:7000 on the board's display" >&2
+    ;;
   run)
     check_connection
     deploy
@@ -94,7 +163,7 @@ case "${1:-}" in
     SSH_AUTH_SOCK="$AGENT_SOCK" ssh-add -l
     ;;
   *)
-    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
     ;;
 esac

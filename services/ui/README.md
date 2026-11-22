@@ -11,9 +11,10 @@ Waveshare panel.**
 python3 services/ui/main.py --simulated --scenario morning
 # open http://127.0.0.1:7000
 
-# UNO Q Linux side, real HardwareGateway (needs the router and Bridge):
-python3 services/ui/main.py --host 0.0.0.0
-chromium --kiosk http://127.0.0.1:7000
+# UNO Q with real sensors: run it as an App Lab app (the Bridge library and
+# router socket are only available inside App Lab containers):
+scripts/contextcue-app.sh run      # on the board, after git pull
+scripts/unoq.sh ui-run             # or from a laptop over SSH
 
 # Options: --scenario morning|event_rain|comfort|quiet_hours, --port,
 #          --db PATH (default ~/.contextcue/contextcue.db),
@@ -99,12 +100,10 @@ Nothing is loaded from the network: no CDN, web fonts or remote images.
 
 ## Still open
 
-- **App Lab packaging.** App Lab apps must be self-contained. To ship this
-  as an app: create `apps/contextcue/` with `app.yaml`, copy or package
-  `contextcue_app`, `contextcue_ui` and `contextcue_contracts`, and point
-  `python/main.py` at `services/ui/main.py`'s `main()`. Declaring
-  `arduino:web_ui` is optional: this server already serves port 7000, but
-  App Lab's webview display needs the Brick, so check that on the board.
+- **App Lab packaging:** done. `apps/contextcue/` is the app template and
+  `scripts/contextcue-app.sh` assembles and runs it (on the board after
+  `git pull`, or `scripts/unoq.sh ui-run` from a laptop). See
+  [apps/contextcue/README.md](../../apps/contextcue/README.md).
 - Board checks from plan section D: full screen, touch orientation, kiosk
   autostart, screen blanking off.
 
