@@ -360,6 +360,116 @@ def _allowed(snapshot: ContextSnapshot, referenced: set[str]) -> tuple[set[str],
     return numbers, times
 
 
+# Meaning checks (security review CC-05). The number checks above accept any
+# number the model was shown, wherever it appears in the reply: "70% chance of
+# rain now and 10% later" passed with 10% now and 70% later. These tie a
+# number to what it measures: its unit, its forecast period and AM/PM.
+_PERCENT = re.compile(r"(?<![\w.])(\d+(?:\.\d+)?)(?=\s*(?:%|percent\b))", re.I)
+_DEGREES = re.compile(r"(?<![\w.])(-?\d+(?:\.\d+)?)(?=\s*(?:°|deg))", re.I)
+# "7 PM", "7:30pm", "7:30 a.m." in the reply; "7:30 PM" or "19:30" in the view.
+_CLOCK = re.compile(r"\b(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\b", re.I)
+_VIEW_CLOCK = re.compile(r"\b(\d{1,2}):(\d{2})(?:\s*([AP])M\b)?")
+# A clause names one period; "10% now and 70% later" is two clauses.
+_CLAUSE = re.compile(r"[,;]|\s+(?:and|but|while|then|with|though|although)\s+|\s[-–—]\s", re.I)
+_NOW = re.compile(r"\b(?:right now|now|currently|at the moment|at present|for now)\b", re.I)
+_LATER = re.compile(r"\b(?:later|this afternoon|this evening|tonight|overnight)\b|"
+                    r"\b(?:from|until|after)\s+\d", re.I)
+_PERIOD_OF = {"forecast_next": "now", "forecast_later": "later"}
+
+
+def _forms(value) -> set[str]:
+    """Number keys a value may be written as ("22.46" -> 22, 22.5, 22.46)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return set()
+    return {_number_key(f"{value:.0f}"), _number_key(f"{value:.1f}"), _number_key(str(value))}
+
+
+def _hour24(hour: str, meridiem: str | None) -> int:
+    h = int(hour)
+    if not meridiem:
+        return h
+    return h % 12 + (12 if meridiem.lower() == "p" else 0)
+
+
+def _semantic_problem(text: str, snapshot: ContextSnapshot, referenced: set[str]) -> str | None:
+    view = model_view(snapshot)
+    items = [e for e in view.get("evidence", []) if e["id"] in referenced]
+    percents: set[str] = set()
+    temperatures: set[str] = set()
+    indoor_temperatures: set[str] = set()
+    periods: dict[str, dict[str, set[str]]] = {}
+    clocks: set[tuple[int, str]] = set()
+
+    def times_in(value):
+        if isinstance(value, str):
+            for hour, minute, meridiem in _VIEW_CLOCK.findall(value):
+                clocks.add((_hour24(hour, meridiem), minute))
+        elif isinstance(value, dict):
+            for v in value.values():
+                times_in(v)
+        elif isinstance(value, (list, tuple)):
+            for v in value:
+                times_in(v)
+
+    for item in items:
+        kind = item.get("type", "")
+        times_in({k: v for k, v in item.items() if k not in ("id", "type")})
+        if kind.startswith("forecast"):
+            rain, temp = _forms(item.get("rain_chance_pct")), _forms(item.get("temperature_c"))
+            percents |= rain
+            temperatures |= temp
+            if kind in _PERIOD_OF:
+                periods[_PERIOD_OF[kind]] = {"rain": rain, "temp": temp}
+        elif kind in ("humidity", "temperature"):
+            forms = _forms(item.get("value"))
+            (percents if kind == "humidity" else indoor_temperatures).update(forms)
+        elif kind in ("preferred_humidity_range", "preferred_temperature_range"):
+            forms = _forms(item.get("low")) | _forms(item.get("high"))
+            (percents if kind == "preferred_humidity_range" else indoor_temperatures).update(forms)
+    temperatures |= indoor_temperatures
+    facts = view.get("facts", {})
+    percents |= _forms(facts.get("rain_probability"))
+    times_in(facts)
+
+    # Units: a percentage must be a chance or a humidity, a degree a temperature.
+    for number in _PERCENT.findall(text):
+        if _number_key(number) not in percents:
+            return f"wrong_quantity:{number}%"
+    for number in _DEGREES.findall(text):
+        if _number_key(number) not in temperatures:
+            return f"wrong_quantity:{number}deg"
+
+    # AM/PM: "7:30 AM" for a 19:30 event passes the hour-and-minute check.
+    for hour, minute, meridiem in _CLOCK.findall(text):
+        if (_hour24(hour, meridiem), minute or "00") not in clocks:
+            return f"unsupported_time:{hour}:{minute or '00'} {meridiem.upper()}M"
+
+    # Periods: a forecast number in a clause that says "now" or "later" must be
+    # that period's. Clauses without a period word are left to the checks above.
+    for clause in _CLAUSE.split(text):
+        markers = [(m.start(), m.end(), "now") for m in _NOW.finditer(clause)]
+        markers += [(m.start(), m.end(), "later") for m in _LATER.finditer(clause)]
+        if not markers:
+            continue
+        numbers = [] if re.search(r"humid", clause, re.I) else \
+            [(m, "rain") for m in _PERCENT.finditer(clause)]
+        numbers += [(m, "temp") for m in _DEGREES.finditer(clause)
+                    if _number_key(m.group(1)) not in indoor_temperatures]
+        for match, quantity in numbers:
+            distance = {}
+            for start, end, period in markers:
+                gap = start - match.end() if start >= match.end() else match.start() - end
+                distance[period] = min(gap, distance.get(period, gap))
+            nearest = sorted(distance.items(), key=lambda kv: kv[1])
+            if len(nearest) > 1 and nearest[0][1] == nearest[1][1]:
+                continue  # equally close to both: leave it
+            period = nearest[0][0]
+            expected = periods.get(period, {}).get(quantity)
+            if expected and _number_key(match.group(1)) not in expected:
+                return f"wrong_period:{match.group(1)} {period}"
+    return None
+
+
 def _number_key(text: str) -> str:
     """Compare numbers by value: "20", "20.0" and "020" are the same claim."""
     try:
@@ -413,6 +523,9 @@ def validate_response(response: ModelResponse, snapshot: ContextSnapshot) -> str
     for number in _NUMBER.findall(_TIME.sub(" ", text)):
         if _number_key(number) not in allowed:
             return f"unsupported_number:{number}"
+    problem = _semantic_problem(text, snapshot, referenced)
+    if problem:
+        return problem
     if _out_of_range(snapshot):
         for match in _COMFORTABLE.finditer(text):
             if not _NEGATED.search(text[:match.start()]):

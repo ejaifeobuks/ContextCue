@@ -210,6 +210,43 @@ class ValidationTests(unittest.TestCase):
         good = response("Client call starts at 11:05 AM, in 4 minutes.", ids, "preparation")
         self.assertIsNone(validate_response(good, prep))
 
+    def test_numbers_must_keep_their_meaning(self):
+        """Security review CC-05: shown numbers in the wrong place passed."""
+        now = {"condition": "cloudy", "precipitation_probability": 10.0, "temperature_c": 12.0}
+        later = {"condition": "rainy", "precipitation_probability": 70.0, "temperature_c": 4.0,
+                 "start_local": "17:00", "end_local": "18:00"}
+        ev = (evidence("weather.now", "forecast_next", now), evidence("weather.later", "forecast_later", later))
+        rain = snapshot("context_answer", ev, {}, "rain_today")
+        ids = ("weather.now", "weather.later")
+        wrong = {
+            # The review's reproduction: the periods swapped.
+            "There is a 70% chance of rain now and 10% later.": "wrong_period:70 now",
+            "Rain chance is 10% now, rising to 10% later.": "wrong_period:10 later",
+            "It is 4 degC now and 12 degC later.": "wrong_period:4 now",
+            "70% chance of rain from 5:00 AM.": "unsupported_time:5:00 AM",
+            "It will be 70 degC later.": "wrong_quantity:70deg",
+        }
+        for text, reason in wrong.items():
+            with self.subTest(text=text):
+                self.assertEqual(validate_response(response(text, ids, "context_answer"), rain), reason)
+        right = ("There is a 10% chance of rain now and 70% later.",
+                 "Cloudy now, with a 70% chance of rain from 5:00 PM.",
+                 "Rain is likely later today (70%), so take an umbrella if you go out.",
+                 "It is 12 degC now, dropping to 4 degC this evening.",
+                 "Expect rain from 5 PM; the chance is 70%.")
+        for text in right:
+            with self.subTest(text=text):
+                self.assertIsNone(validate_response(response(text, ids, "context_answer"), rain))
+
+        room = snapshot("context_answer", (evidence("sensor.temperature", "temperature", 22.0, unit="degC"),
+                                           evidence("sensor.humidity", "humidity", 45.0, unit="%RH")),
+                        {}, "room_comfort")
+        ids = ("sensor.temperature", "sensor.humidity")
+        self.assertEqual(validate_response(response("It is 45 degC with 22% humidity.", ids, "context_answer"),
+                                           room), "wrong_quantity:22%")
+        self.assertIsNone(validate_response(
+            response("It is 22 degC now with 45% humidity.", ids, "context_answer"), room))
+
     def test_comfortable_must_match_the_range(self):
         hot = snapshot()  # 27.4 degC, preferred 20-26, condition hot
         ids = ("sensor.temperature", "pref.temperature_range")
