@@ -1,0 +1,176 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 760" font-family="Inter, Segoe UI, Arial, sans-serif">
+  <!-- Tinkercad-style assembly view of the ContextCue prototype.
+       Sources: docs/planning/IMPLEMENTATION_PLAN.md (bus scan, display, dock, power),
+       apps/contextcue-hardware/sketch/src/Config.h (I2C addresses),
+       docs/planning/AI_ACCELERATION_AND_VOICE_PLAN.md (audio). The Qwiic cable
+       order is not recorded in the project, so the chain order is illustrative. -->
+  <defs>
+    <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+      <path d="M20 0H0V20" fill="none" stroke="#dfe7ee" stroke-width="1"/>
+    </pattern>
+    <filter id="sh" x="-10%" y="-10%" width="130%" height="130%">
+      <feDropShadow dx="3" dy="5" stdDeviation="4" flood-color="#1b2a3a" flood-opacity="0.22"/>
+    </filter>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#5b6b7b"/>
+    </marker>
+  </defs>
+
+  <rect width="1280" height="760" fill="#f4f8fb"/>
+  <rect width="1280" height="760" fill="url(#grid)"/>
+  <text x="40" y="52" font-size="28" font-weight="700" fill="#14212e">ContextCue — how the prototype is assembled</text>
+  <text x="40" y="80" font-size="15" fill="#4a5a6a">Simplified, not an electrical schematic. Qwiic = 4-wire I²C cable (3.3 V, GND, SDA, SCL) on the UNO Q's Wire1 bus.</text>
+
+  <!-- ===== Qwiic cables (drawn first, under modules) ===== -->
+  <g fill="none" stroke-width="7" stroke-linecap="round">
+    <path d="M520 500 C 520 600, 300 600, 250 560" stroke="#1d1d1d"/>
+    <path d="M250 470 C 250 420, 250 400, 250 380" stroke="#1d1d1d"/>
+    <path d="M250 290 C 250 250, 250 240, 250 225" stroke="#1d1d1d"/>
+    <path d="M330 170 C 400 130, 470 130, 520 150" stroke="#1d1d1d"/>
+    <path d="M700 170 C 740 130, 790 130, 830 150" stroke="#1d1d1d"/>
+  </g>
+  <g fill="none" stroke-width="2" stroke-linecap="round" opacity="0.9">
+    <path d="M520 500 C 520 600, 300 600, 250 560" stroke="#3b82f6" stroke-dasharray="1 9"/>
+    <path d="M250 470 C 250 420, 250 400, 250 380" stroke="#3b82f6" stroke-dasharray="1 9"/>
+    <path d="M250 290 C 250 250, 250 240, 250 225" stroke="#3b82f6" stroke-dasharray="1 9"/>
+    <path d="M330 170 C 400 130, 470 130, 520 150" stroke="#3b82f6" stroke-dasharray="1 9"/>
+    <path d="M700 170 C 740 130, 790 130, 830 150" stroke="#3b82f6" stroke-dasharray="1 9"/>
+  </g>
+  <text x="300" y="625" font-size="13" fill="#4a5a6a">Qwiic daisy chain (order illustrative)</text>
+
+  <!-- ===== Arduino UNO Q ===== -->
+  <g filter="url(#sh)">
+    <rect x="420" y="300" width="300" height="200" rx="14" fill="#0e7c86"/>
+    <rect x="420" y="300" width="300" height="200" rx="14" fill="none" stroke="#095b63" stroke-width="3"/>
+  </g>
+  <!-- header strips -->
+  <rect x="445" y="312" width="200" height="12" rx="2" fill="#1b1b1b"/>
+  <rect x="445" y="476" width="240" height="12" rx="2" fill="#1b1b1b"/>
+  <!-- chips -->
+  <rect x="465" y="350" width="100" height="80" rx="6" fill="#222c36"/>
+  <text x="515" y="385" font-size="12" fill="#cfe3ea" text-anchor="middle" font-weight="700">QRB2210</text>
+  <text x="515" y="402" font-size="10" fill="#9fb7c1" text-anchor="middle">Linux · 4× A53</text>
+  <text x="515" y="417" font-size="10" fill="#9fb7c1" text-anchor="middle">3.6 GB RAM</text>
+  <rect x="590" y="360" width="70" height="60" rx="5" fill="#2b3640"/>
+  <text x="625" y="388" font-size="11" fill="#cfe3ea" text-anchor="middle" font-weight="700">STM32</text>
+  <text x="625" y="403" font-size="10" fill="#9fb7c1" text-anchor="middle">U585 MCU</text>
+  <!-- bridge arrow between chips -->
+  <path d="M567 392 L588 392" stroke="#ffd166" stroke-width="3" marker-end="url(#arr)"/>
+  <text x="577" y="446" font-size="10" fill="#e6f4f6" text-anchor="middle">Bridge RPC</text>
+  <!-- qwiic connector -->
+  <rect x="505" y="488" width="30" height="16" rx="3" fill="#f2f2f2" stroke="#999"/>
+  <text x="545" y="522" font-size="11" fill="#14212e">Qwiic port</text>
+  <!-- usb-c -->
+  <rect x="712" y="388" width="18" height="30" rx="5" fill="#c9ced3" stroke="#8a9299"/>
+  <text x="570" y="335" font-size="17" font-weight="700" fill="#ffffff" text-anchor="middle" dy="12">Arduino UNO Q</text>
+  <text x="570" y="470" font-size="11" fill="#d6eef1" text-anchor="middle">Wi-Fi 5 · Bluetooth 5.1 · line-out</text>
+
+  <!-- ===== Modulino modules ===== -->
+  <!-- Thermo -->
+  <g filter="url(#sh)">
+    <rect x="170" y="470" width="160" height="90" rx="10" fill="#2f6fb0"/>
+  </g>
+  <rect x="235" y="490" width="30" height="22" rx="3" fill="#e9eef3"/>
+  <text x="250" y="530" font-size="15" font-weight="700" fill="#fff" text-anchor="middle">Modulino Thermo</text>
+  <text x="250" y="548" font-size="11" fill="#d7e6f5" text-anchor="middle">temp + humidity · 0x44 · 1 Hz</text>
+
+  <!-- Light -->
+  <g filter="url(#sh)">
+    <rect x="170" y="290" width="160" height="90" rx="10" fill="#2f6fb0"/>
+  </g>
+  <circle cx="250" cy="318" r="12" fill="#fff4c2" stroke="#e0b100" stroke-width="2"/>
+  <text x="250" y="350" font-size="15" font-weight="700" fill="#fff" text-anchor="middle">Modulino Light</text>
+  <text x="250" y="368" font-size="11" fill="#d7e6f5" text-anchor="middle">ambient lux · 0x53 · 5 Hz</text>
+
+  <!-- Distance -->
+  <g filter="url(#sh)">
+    <rect x="170" y="135" width="160" height="90" rx="10" fill="#2f6fb0"/>
+  </g>
+  <rect x="236" y="148" width="28" height="16" rx="4" fill="#111"/>
+  <circle cx="244" cy="156" r="4" fill="#7a2cff"/><circle cx="256" cy="156" r="4" fill="#333"/>
+  <text x="250" y="190" font-size="15" font-weight="700" fill="#fff" text-anchor="middle">Modulino Distance</text>
+  <text x="250" y="208" font-size="11" fill="#d7e6f5" text-anchor="middle">time-of-flight mm · 0x29 · 10 Hz</text>
+
+  <!-- Buzzer -->
+  <g filter="url(#sh)">
+    <rect x="520" y="120" width="180" height="90" rx="10" fill="#c2410c"/>
+  </g>
+  <circle cx="610" cy="145" r="13" fill="#1b1b1b"/><circle cx="610" cy="145" r="4" fill="#555"/>
+  <text x="610" y="180" font-size="15" font-weight="700" fill="#fff" text-anchor="middle">Modulino Buzzer</text>
+  <text x="610" y="198" font-size="11" fill="#ffe2d1" text-anchor="middle">≤250 ms chime · 0x1E · opt-in</text>
+
+  <!-- Pixels (shown in the "notice" pattern: all 8 amber) -->
+  <g filter="url(#sh)">
+    <rect x="830" y="120" width="190" height="90" rx="10" fill="#7c3aed"/>
+  </g>
+  <g fill="#ff8c00" stroke="#ffd59a" stroke-width="2">
+    <circle cx="858" cy="145" r="6"/><circle cx="877" cy="145" r="6"/><circle cx="896" cy="145" r="6"/><circle cx="915" cy="145" r="6"/>
+    <circle cx="934" cy="145" r="6"/><circle cx="953" cy="145" r="6"/><circle cx="972" cy="145" r="6"/><circle cx="991" cy="145" r="6"/>
+  </g>
+  <text x="925" y="180" font-size="15" font-weight="700" fill="#fff" text-anchor="middle">Modulino Pixels</text>
+  <text x="925" y="198" font-size="11" fill="#f3e8ff" text-anchor="middle">8 RGB LEDs · 0x36</text>
+  <g font-size="11" text-anchor="middle">
+    <circle cx="858" cy="232" r="5" fill="#16a34a"/><text x="890" y="236" fill="#14532d">ready</text>
+    <circle cx="920" cy="232" r="5" fill="#ff8c00"/><text x="953" y="236" fill="#7c2d12">notice</text>
+    <circle cx="982" cy="232" r="5" fill="#dc2626"/><text x="1008" y="236" fill="#7f1d1d">fault</text>
+  </g>
+
+  <!-- ===== USB-C dock + display ===== -->
+  <path d="M730 403 C 780 403, 790 430, 840 430" fill="none" stroke="#5b6b7b" stroke-width="6" stroke-linecap="round"/>
+  <g filter="url(#sh)">
+    <rect x="840" y="400" width="150" height="60" rx="10" fill="#4b5563"/>
+  </g>
+  <text x="915" y="426" font-size="13" font-weight="700" fill="#fff" text-anchor="middle">USB-C multiport dock</text>
+  <text x="915" y="444" font-size="10" fill="#d1d5db" text-anchor="middle">video + USB + power in</text>
+
+  <!-- mains charger -->
+  <path d="M915 460 L915 560" stroke="#b45309" stroke-width="5" fill="none"/>
+  <g filter="url(#sh)">
+    <rect x="860" y="560" width="110" height="56" rx="8" fill="#fde68a" stroke="#b45309" stroke-width="2"/>
+  </g>
+  <text x="915" y="584" font-size="12" font-weight="700" fill="#78350f" text-anchor="middle">Mains USB-C</text>
+  <text x="915" y="600" font-size="11" fill="#78350f" text-anchor="middle">charger</text>
+  <text x="915" y="640" font-size="11" fill="#78350f" text-anchor="middle">(laptop USB power reset the board</text>
+  <text x="915" y="655" font-size="11" fill="#78350f" text-anchor="middle">under full LLM load)</text>
+
+  <!-- display cables -->
+  <path d="M990 420 C 1030 420, 1030 360, 1060 360" fill="none" stroke="#1d4ed8" stroke-width="5"/>
+  <path d="M990 442 C 1040 442, 1040 390, 1060 390" fill="none" stroke="#6b7280" stroke-width="4"/>
+  <text x="1012" y="476" font-size="10" fill="#1d4ed8">video</text>
+  <text x="1012" y="489" font-size="10" fill="#6b7280">USB touch</text>
+
+  <!-- Waveshare touchscreen -->
+  <g filter="url(#sh)">
+    <rect x="1060" y="290" width="190" height="125" rx="10" fill="#111827"/>
+    <rect x="1070" y="300" width="170" height="105" rx="4" fill="#2563eb"/>
+  </g>
+  <rect x="1070" y="300" width="170" height="30" fill="#1e3a8a"/>
+  <text x="1080" y="320" font-size="11" fill="#fff" font-weight="700">Good morning</text>
+  <rect x="1078" y="337" width="104" height="58" rx="5" fill="#f3f4f6"/>
+  <rect x="1188" y="337" width="45" height="27" rx="5" fill="#f3f4f6"/>
+  <rect x="1188" y="368" width="45" height="27" rx="5" fill="#f3f4f6"/>
+  <text x="1155" y="440" font-size="14" font-weight="700" fill="#14212e" text-anchor="middle">Waveshare 7" touchscreen</text>
+  <text x="1155" y="457" font-size="11" fill="#4a5a6a" text-anchor="middle">1024×600 · Chromium kiosk UI</text>
+
+  <!-- ===== Audio ===== -->
+  <path d="M700 330 C 820 280, 900 300, 1060 250" fill="none" stroke="#0ea5e9" stroke-width="3" stroke-dasharray="10 8" marker-end="url(#arr)"/>
+  <g filter="url(#sh)">
+    <rect x="1080" y="185" width="150" height="80" rx="16" fill="#0f172a"/>
+  </g>
+  <circle cx="1120" cy="225" r="20" fill="#334155" stroke="#64748b" stroke-width="3"/>
+  <circle cx="1190" cy="225" r="20" fill="#334155" stroke="#64748b" stroke-width="3"/>
+  <text x="1155" y="170" font-size="14" font-weight="700" fill="#14212e" text-anchor="middle">Speaker</text>
+  <text x="1155" y="286" font-size="11" fill="#4a5a6a" text-anchor="middle">Bluetooth (tested) or wired</text>
+  <text x="880" y="282" font-size="11" fill="#0369a1">Piper speech via PipeWire</text>
+
+  <!-- ===== Legend ===== -->
+  <g transform="translate(40,680)">
+    <rect width="1200" height="56" rx="10" fill="#ffffff" stroke="#d5dee6"/>
+    <rect x="20" y="20" width="18" height="18" rx="4" fill="#2f6fb0"/><text x="46" y="34" font-size="13" fill="#14212e">Sensors (input)</text>
+    <rect x="190" y="20" width="18" height="18" rx="4" fill="#c2410c"/><text x="216" y="34" font-size="13" fill="#14212e">Sound output</text>
+    <rect x="340" y="20" width="18" height="18" rx="4" fill="#7c3aed"/><text x="366" y="34" font-size="13" fill="#14212e">Light output (LED status)</text>
+    <line x1="610" y1="29" x2="650" y2="29" stroke="#1d1d1d" stroke-width="6"/><text x="660" y="34" font-size="13" fill="#14212e">Qwiic / I²C</text>
+    <line x1="770" y1="29" x2="810" y2="29" stroke="#0ea5e9" stroke-width="3" stroke-dasharray="8 6"/><text x="820" y="34" font-size="13" fill="#14212e">Wireless audio</text>
+    <line x1="950" y1="29" x2="990" y2="29" stroke="#b45309" stroke-width="5"/><text x="1000" y="34" font-size="13" fill="#14212e">Power</text>
+  </g>
+</svg>
