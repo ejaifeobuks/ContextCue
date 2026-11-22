@@ -1,0 +1,6 @@
+[ 2132.797875] msm_dpu 5e01000.display-controller: [drm:hangcheck_handler [msm]] *ERROR* 7.0.2.0: hangcheck detected gpu lockup rb 0!
+[ 2132.809973] msm_dpu 5e01000.display-controller: [drm:hangcheck_handler [msm]] *ERROR* 7.0.2.0:     completed fence: 24909
+[ 2132.821349] msm_dpu 5e01000.display-controller: [drm:hangcheck_handler [msm]] *ERROR* 7.0.2.0:     submitted fence: 24917
+[ 2132.832684] msm_dpu 5e01000.display-controller: [drm:recover_worker [msm]] *ERROR* 7.0.2.0: hangcheck recover!
+[ 2132.843169] msm_dpu 5e01000.display-controller: [drm:recover_worker [msm]] *ERROR* 7.0.2.0: offending task: llama-bench (/work/llama.cpp/build/bin/llama-bench -m /models/unsloth/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q4_0.gguf -p 384 -n 64 -r 3 -t 4 -ngl 99 -dev Vulkan0 -o md)
+[ 2132.926885] revision: 0 (7.0.2.0)

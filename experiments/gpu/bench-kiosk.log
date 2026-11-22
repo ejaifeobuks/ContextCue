@@ -1,0 +1,36 @@
+=== kiosk-running 2026-11-16T08:00:19Z
+--- devices
+	apiVersion         = 1.0.354
+	deviceName         = Turnip Adreno (TM) 702
+	driverName         = turnip Mesa driver
+	apiVersion         = 1.4.354
+	deviceName         = llvmpipe (LLVM 19.1.7, 128 bits)
+	driverName         = llvmpipe
+Platform #0: rusticl
+ `-- Device #0: FD702
+
+ggml_opencl: device: 'FD702 (OpenCL 3.0 )'
+ggml_opencl: unsupported GPU 'FD702'.
+ggml_opencl: drop unsupported device 'FD702'.
+Available devices:
+  Vulkan0: Turnip Adreno (TM) 702 (1833 MiB, 1702 MiB free)
+--- device none (ngl 0)
+
+| model                          |       size |     params | backend    | ngl | dev          |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | ------------ | --------------: | -------------------: |
+| qwen35 0.8B Q4_0               | 473.21 MiB |   752.39 M | Vulkan,OpenCL |   0 | none         |           pp384 |         11.05 ± 0.02 |
+| qwen35 0.8B Q4_0               | 473.21 MiB |   752.39 M | Vulkan,OpenCL |   0 | none         |            tg64 |          3.75 ± 0.04 |
+
+build: f4d8af6 (1)
+--- device Vulkan0 (ngl 99)
+Aborted
+/work/llama.cpp/build/bin/libllama-bench-impl.so(+0x177c0) [0xffffa11677c0]
+/work/llama.cpp/build/bin/libllama-bench-impl.so(_Z11llama_benchiPPc+0xb1c) [0xffffa1174cfc]
+/lib/aarch64-linux-gnu/libc.so.6(+0x2225c) [0xffffa0d0225c]
+/lib/aarch64-linux-gnu/libc.so.6(__libc_start_main+0x9c) [0xffffa0d0233c]
+/work/llama.cpp/build/bin/llama-bench(+0x10b0) [0xaaaae26310b0]
+terminate called after throwing an instance of 'vk::DeviceLostError'
+  what():  vk::Device::createComputePipeline: ErrorDeviceLost
+timeout: the monitored command dumped core
+=== done kiosk-running
+BENCH_EXIT=0
